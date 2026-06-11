@@ -25,12 +25,15 @@ class CarState(Enum):
 
 
 class Car:
-    def __init__(self, engine, building, params: CarParams, controller, metrics) -> None:
+    def __init__(self, engine, building, params: CarParams, controller, metrics,
+                 idx: int = 0) -> None:
         self.engine = engine
         self.building = building
         self.p = params
         self.controller = controller
         self.metrics = metrics
+        self.idx = idx
+        self.out_of_service = False  # вывод из обслуживания (ремонт)
 
         self.state = CarState.IDLE
         self.floor = params.home_floor  # текущий/последний этаж
@@ -72,14 +75,26 @@ class Car:
 
     # --- цикл состояния ---------------------------------------------------
 
+    def set_out_of_service(self, value: bool) -> None:
+        """Вывод из строя: развозит пассажиров в кабине, новых не берёт."""
+        self.out_of_service = value
+        self.controller.rebalance()
+        if not value:
+            self.notify_call()
+
     def _decide_next(self) -> None:
         """Стоим с закрытыми дверями — выбрать следующее действие."""
         nxt = self.controller.next_target(self)
         if nxt is None:
             self.direction = 0
             self.state = CarState.IDLE
-            self._arm_home_timer()
-            return
+            self.controller.on_idle(self)  # вызовы могут переназначить на нас
+            if self.state != CarState.IDLE:
+                return
+            nxt = self.controller.next_target(self)
+            if nxt is None:
+                self._arm_home_timer()
+                return
         if nxt == self.floor:
             self.direction = self.controller.service_direction(self, self.floor)
             self._open_doors()
@@ -97,7 +112,21 @@ class Car:
         self.t_depart = self.engine.now
         self.state = CarState.MOVING
         self.metrics.on_depart(self.engine.now, self)
+        self.metrics.on_trip_energy(self._trip_energy(abs(
+            self.building.height_of(target) - self.profile.origin)))
         self._phase_event = self.engine.schedule(self.profile.total, self._arrive)
+
+    def _trip_energy(self, distance: float) -> float:
+        """Энергия поездки, Дж. Упрощённая модель привода с противовесом:
+
+        противовес уравновешивает кабину + counterweight_ratio номинала,
+        мотор работает против остаточного дисбаланса с КПД drive_efficiency,
+        рекуперация не учитывается; плюс фиксированная энергия старта.
+        """
+        imbalance_kg = abs(len(self.riders) * 75.0
+                           - self.p.counterweight_ratio * self.p.capacity * 75.0)
+        e_mech = imbalance_kg * 9.81 * distance
+        return e_mech / self.p.drive_efficiency + self.p.start_energy_j
 
     def _consider_retarget(self) -> None:
         """Новый вызов в полёте: можно ли остановиться раньше текущей цели."""

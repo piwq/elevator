@@ -26,9 +26,17 @@ HORIZON_DAYS = 30
 
 def make_sim(sc: Scenario, seed: int = 0) -> Simulation:
     sim = Simulation(sc.building, sc.profile, sc.car, seed=seed,
-                     t_start=sc.start_hour * 3600.0)
+                     t_start=sc.start_hour * 3600.0,
+                     n_cars=sc.n_cars, patience=sc.patience)
     sim.start_stream(sc.start_hour * 3600.0 + HORIZON_DAYS * 86400.0)
     return sim
+
+
+STATE_CODE = {"idle": 0, "moving": 1, "doors_opening": 2,
+              "transfer": 3, "doors_closing": 4}
+STATE_NAME = {v: k for k, v in STATE_CODE.items()}
+HIST_STEP = 2.0  # шаг выборки истории, сек модельного времени
+HIST_MAX = 43200  # ~сутки при шаге 2 с
 
 
 def list_scenarios() -> list:
@@ -54,6 +62,8 @@ class SimRunner(threading.Thread):
         self._seed = 0
         self._last_summary: dict = {}
         self._summary_at = 0.0
+        self.history: list = []  # выборки состояния для перемотки/траектории
+        self._next_sample = 0.0
 
     def run(self) -> None:
         last = time.monotonic()
@@ -64,8 +74,26 @@ class SimRunner(threading.Thread):
                 if not self.paused:
                     target = self.sim.engine.now + dt * self.speed
                     self.sim.step_until(target)
+                    self._sample_history()
                 self.snapshot = self._make_snapshot()
             time.sleep(0.05)
+
+    def _sample_history(self) -> None:
+        t = self.sim.engine.now
+        if t < self._next_sample:
+            return
+        self._next_sample = t + HIST_STEP
+        ctrl = self.sim.controller
+        self.history.append({
+            "t": t,
+            "cars": [[round(c.position(t), 2), STATE_CODE[c.state.value],
+                      c.load(), int(c.out_of_service)]
+                     for c in self.sim.cars],
+            "queues": [[len(ctrl.waiting[f][1]), len(ctrl.waiting[f][-1])]
+                       for f in range(self.sim.building.floors)],
+        })
+        if len(self.history) > HIST_MAX:
+            del self.history[:HIST_MAX // 10]
 
     def control(self, cmd: dict) -> None:
         with self.lock:
@@ -78,10 +106,14 @@ class SimRunner(threading.Thread):
                 self.scenario = load_scenario(SCENARIOS / file)
                 self.scenario_file = file
                 cmd["reset"] = True
+            if "car_oos" in cmd:
+                idx, val = cmd["car_oos"]
+                self.sim.cars[int(idx)].set_out_of_service(bool(val))
             if cmd.get("reset"):
                 self._seed += 1
                 self.sim = make_sim(self.scenario, self._seed)
                 self._last_summary, self._summary_at = {}, 0.0
+                self.history, self._next_sample = [], 0.0
 
     def _make_snapshot(self) -> dict:
         sim, t = self.sim, self.sim.engine.now
@@ -90,7 +122,6 @@ class SimRunner(threading.Thread):
             self._last_summary = sim.metrics.summary()
             self._last_summary["wait_hist"] = self._wait_histogram()
             self._summary_at = t
-        y, v, acc = car.kinematics_at(t)
         mix = sim.profile.mix(t)
         pop = sim.building.total_population
         rate_5min = sim.profile.passenger_rate(t, pop) * 300.0
@@ -111,18 +142,7 @@ class SimRunner(threading.Thread):
             "paused": self.paused,
             "floors": sim.building.floors,
             "floor_height": sim.building.floor_height,
-            "car": {
-                "y": y,
-                "v": round(v, 3),
-                "a": round(acc, 3),
-                "state": car.state.value,
-                "load": car.load(),
-                "capacity": car.p.capacity,
-                "direction": car.direction,
-                "floor": car.floor,
-                "target": car.target,
-                "calls": sorted(car.car_calls),
-            },
+            "cars": [self._car_state(c, t) for c in sim.cars],
             "queues": [[len(ctrl.waiting[f][1]), len(ctrl.waiting[f][-1])]
                        for f in range(sim.building.floors)],
             "demand": {
@@ -133,7 +153,11 @@ class SimRunner(threading.Thread):
                 "created": sim.generator._next_pid,
                 "delivered": len(sim.metrics.completed),
                 "waiting": ctrl.total_waiting(),
+                "abandoned": len(sim.metrics.abandoned),
+                "energy_kwh": round(self._total_energy_j() / 3.6e6, 3),
             },
+            "hist_range": [self.history[0]["t"], self.history[-1]["t"]]
+            if self.history else None,
             "metrics": self._last_summary,
             "recent": [
                 {
@@ -147,6 +171,82 @@ class SimRunner(threading.Thread):
                 for p in sim.metrics.completed[-12:][::-1]
             ],
         }
+
+    def _car_state(self, c, t: float) -> dict:
+        y, v, acc = c.kinematics_at(t)
+        return {
+            "y": y, "v": round(v, 3), "a": round(acc, 3),
+            "state": c.state.value,
+            "load": c.load(), "capacity": c.p.capacity,
+            "direction": c.direction, "floor": c.floor, "target": c.target,
+            "calls": sorted(c.car_calls),
+            "oos": c.out_of_service,
+        }
+
+    def _total_energy_j(self) -> float:
+        elapsed = self.sim.engine.now - self.scenario.start_hour * 3600.0
+        standby = self.scenario.car.standby_w * len(self.sim.cars) * elapsed
+        return self.sim.metrics.energy_j + standby
+
+    # --- история, траектория, отчёт -------------------------------------------
+
+    def history_at(self, t: float) -> dict:
+        with self.lock:
+            if not self.history:
+                return {}
+            lo, hi = 0, len(self.history) - 1
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if self.history[mid]["t"] < t:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            sample = dict(self.history[lo])
+        sample["state_names"] = STATE_NAME
+        return sample
+
+    def trajectory(self, max_points: int = 2400) -> dict:
+        with self.lock:
+            step = max(1, len(self.history) // max_points)
+            pts = self.history[::step]
+            return {
+                "t": [p["t"] for p in pts],
+                "cars": [[p["cars"][i][0] for p in pts]
+                         for i in range(len(self.sim.cars))],
+            }
+
+    def report(self) -> dict:
+        with self.lock:
+            sim = self.sim
+            t0 = self.scenario.start_hour * 3600.0
+            t = sim.engine.now
+            s = sim.metrics.summary()
+            waits_over_90 = sum(1 for p in sim.metrics.completed
+                                if p.waiting_time() > 90.0)
+            n = max(1, len(sim.metrics.completed))
+            share_over_90 = waits_over_90 / n
+            energy_kwh = self._total_energy_j() / 3.6e6
+            hours = max(1e-9, (t - t0) / 3600.0)
+            verdicts = {
+                "awt_le_40": ("Среднее ожидание ≤ 40 с (ISO 8100-32, жилое)",
+                              s.get("awt", 0) <= 40.0 if s.get("passengers") else None),
+                "share90_le_10": ("Ожиданий дольше 90 с — не более 10% (CIBSE)",
+                                  share_over_90 <= 0.10 if s.get("passengers") else None),
+                "no_abandoned": ("Никто не ушёл, не дождавшись лифта",
+                                 len(sim.metrics.abandoned) == 0),
+            }
+            return {
+                "scenario": self.scenario.name,
+                "sim_hours": round(hours, 2),
+                "summary": s,
+                "share_over_90": round(share_over_90, 4),
+                "heatmap": sim.metrics.heatmap(sim.building.floors),
+                "hourly_awt": sim.metrics.hourly_awt(),
+                "energy_kwh": round(energy_kwh, 3),
+                "energy_kwh_per_day": round(energy_kwh / hours * 24.0, 2),
+                "trips": len(sim.metrics.departures),
+                "verdicts": verdicts,
+            }
 
     def _wait_histogram(self, bin_s: float = 10.0, n_bins: int = 12) -> dict:
         """Гистограмма ожиданий по корзинам bin_s секунд; последняя — переполнение."""
@@ -175,7 +275,27 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args) -> None:
         pass
 
+    def _send_json(self, obj) -> None:
+        body = json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:
+        from urllib.parse import parse_qs, urlparse
+        url = urlparse(self.path)
+        if url.path == "/history":
+            t = float(parse_qs(url.query).get("at", ["0"])[0])
+            self._send_json(RUNNER.history_at(t))
+            return
+        if url.path == "/trajectory":
+            self._send_json(RUNNER.trajectory())
+            return
+        if url.path == "/report":
+            self._send_json(RUNNER.report())
+            return
         if self.path in ("/", "/index.html"):
             body = (STATIC / "index.html").read_bytes()
             self.send_response(200)

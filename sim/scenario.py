@@ -20,9 +20,11 @@
     "transfer_time": 1.2,
     "home_floor": 0, "home_timeout": 60.0
   },
+  "cars": 1,                       // кабин в группе (1-8); 2+ — Nearest Car
   "demand": {
     "peak_percent": 6.0,           // пиковый спрос, % населения за 5 мин
     "mean_batch": 1.2,             // средний размер группы
+    "patience_s": 600,             // ушёл пешком после стольких секунд; 0 — ждёт вечно
     "day_profile": [               // кусочно-постоянный суточный профиль
       {"from_hour": 6.0, "intensity": 1.0, "in": 0.15, "out": 0.75, "interfloor": 0.10},
       ...
@@ -51,6 +53,8 @@ class Scenario:
     car: CarParams
     profile: DemandProfile
     start_hour: float = 6.0
+    n_cars: int = 1  # кабин в группе
+    patience: float = 0.0  # сек ожидания до ухода пешком; 0 — без ухода
 
 
 def _take(section: dict, allowed: set, where: str) -> dict:
@@ -64,7 +68,7 @@ def _take(section: dict, allowed: set, where: str) -> dict:
 def load_scenario(path: str | Path) -> Scenario:
     path = Path(path)
     raw = json.loads(path.read_text(encoding="utf-8"))
-    _take(raw, {"name", "building", "car", "demand", "web"}, str(path))
+    _take(raw, {"name", "building", "car", "cars", "demand", "web"}, str(path))
 
     b_kwargs = _take(raw.get("building", {}),
                      {f.name for f in dataclasses.fields(Building) if f.init},
@@ -77,8 +81,13 @@ def load_scenario(path: str | Path) -> Scenario:
     if not 0 <= car.home_floor < building.floors:
         raise ValueError("car.home_floor вне диапазона этажей")
 
+    n_cars = int(raw.get("cars", 1))
+    if not 1 <= n_cars <= 8:
+        raise ValueError("cars: ожидается от 1 до 8 кабин")
+
     demand = _take(raw.get("demand", {}),
-                   {"peak_percent", "mean_batch", "day_profile"}, "demand")
+                   {"peak_percent", "mean_batch", "day_profile", "patience_s"},
+                   "demand")
     slices = RESIDENTIAL_DAY
     if "day_profile" in demand:
         slices = []
@@ -109,4 +118,6 @@ def load_scenario(path: str | Path) -> Scenario:
         car=car,
         profile=profile,
         start_hour=float(web.get("start_hour", 6.0)),
+        n_cars=n_cars,
+        patience=float(demand.get("patience_s", 0.0)),
     )

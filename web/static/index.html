@@ -9,9 +9,9 @@
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--fg);
          font:14px/1.45 "Segoe UI", system-ui, sans-serif; display:flex; height:100vh; }
-  #shaft-wrap { flex:0 0 460px; padding:16px; overflow:hidden; }
+  #shaft-wrap { flex:0 0 auto; padding:16px; overflow:auto; }
   canvas { background:var(--panel); border:1px solid var(--line); border-radius:10px; }
-  #side { flex:1; padding:16px 20px 16px 4px; overflow-y:auto; }
+  #side { flex:1; padding:16px 20px 16px 4px; overflow-y:auto; min-width:540px; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
           padding:12px 16px; margin-bottom:12px; }
   h1 { font-size:16px; margin:0 0 4px; } h2 { font-size:12px; margin:0 0 8px;
@@ -27,6 +27,7 @@
            border-radius:7px; padding:6px 12px; cursor:pointer; font:inherit; }
   button:hover { border-color:var(--accent); }
   button.on { background:var(--accent); color:#08111e; border-color:var(--accent); }
+  button.danger { border-color:var(--warn); color:var(--warn); }
   .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
   .bar { height:8px; border-radius:4px; background:var(--bg); overflow:hidden;
          display:flex; margin-top:6px; }
@@ -37,20 +38,40 @@
   td:first-child, th:first-child { text-align:left; }
   a.btn { color:var(--accent); text-decoration:none; font-size:12px; }
   .telem-label { font-size:11px; color:var(--dim); margin:6px 0 2px; }
+  select { background:var(--bg); color:var(--fg); border:1px solid var(--line);
+           border-radius:7px; padding:6px 10px; font:inherit; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  #replay-badge { display:none; background:var(--warn); color:#08111e; font-weight:600;
+                  border-radius:6px; padding:2px 8px; font-size:12px; }
+  #overlay { display:none; position:fixed; inset:0; background:#000a; z-index:10;
+             align-items:flex-start; justify-content:center; overflow:auto; padding:30px; }
+  #overlay .card { max-width:760px; width:100%; }
+  .verdict-ok { color:var(--up); } .verdict-bad { color:var(--warn); }
 </style>
 </head>
 <body>
-<div id="shaft-wrap"><canvas id="cv" width="428" height="0"></canvas></div>
+<div id="shaft-wrap">
+  <canvas id="cv" width="520" height="0"></canvas>
+  <div class="row" style="margin-top:8px" id="oos-row"></div>
+  <div class="row" style="margin-top:8px">
+    <span id="replay-badge">⏪ ПЕРЕМОТКА</span>
+    <span class="sub" id="scrub-time"></span>
+  </div>
+  <input type="range" id="scrub" min="0" max="1000" value="1000">
+  <div class="row" style="justify-content:space-between">
+    <span class="sub">история прогона (тяни ползунок)</span>
+    <button id="live-btn" style="display:none">▶ к живому эфиру</button>
+  </div>
+</div>
 <div id="side">
   <div class="card row" style="justify-content:space-between">
     <div>
-      <h1 id="title">Пассажирский лифт жилого дома — живая симуляция</h1>
+      <h1 id="title">Симуляция лифтов жилого дома</h1>
       <div class="sub" id="subtitle">подключение…</div>
     </div>
-    <div>
-      <div class="sub" style="margin-bottom:4px">сценарий (scenarios/*.json)</div>
-      <select id="scenario" style="background:var(--bg);color:var(--fg);
-        border:1px solid var(--line);border-radius:7px;padding:6px 10px;font:inherit"></select>
+    <div class="row">
+      <select id="scenario"></select>
+      <button id="report-btn">📋 отчёт</button>
     </div>
   </div>
   <div class="card row" style="justify-content:space-between">
@@ -78,21 +99,27 @@
     </div>
   </div>
   <div class="card">
-    <h2>Поток</h2>
+    <h2>Поток и ресурсы</h2>
     <div class="grid">
       <div class="kpi" id="k-created"><div class="v">–</div><div class="l">пассажиров создано</div></div>
       <div class="kpi" id="k-delivered"><div class="v">–</div><div class="l">доставлено</div></div>
       <div class="kpi" id="k-waiting"><div class="v">–</div><div class="l">ждут сейчас</div></div>
+      <div class="kpi" id="k-abandoned"><div class="v">–</div><div class="l">ушли пешком</div></div>
+      <div class="kpi" id="k-energy"><div class="v">–</div><div class="l">энергия, кВт·ч</div></div>
     </div>
     <div style="margin-top:8px"><a class="btn" href="/passengers.csv" download>⬇ выгрузить историю пассажиров (CSV)</a></div>
   </div>
   <div class="card">
-    <h2>Телеметрия кабины (аналитическая S-кривая в каждый момент)</h2>
-    <div class="grid" style="margin-bottom:6px">
-      <div class="kpi" id="k-y"><div class="v">–</div><div class="l">высота, м</div></div>
-      <div class="kpi" id="k-v"><div class="v">–</div><div class="l">скорость, м/с</div></div>
-      <div class="kpi" id="k-a"><div class="v">–</div><div class="l">ускорение, м/с²</div></div>
-    </div>
+    <h2>Траектории кабин за прогон</h2>
+    <canvas id="traj" width="640" height="170"></canvas>
+  </div>
+  <div class="card">
+    <h2>Тепловая карта: среднее ожидание, этаж × час</h2>
+    <canvas id="heat" width="640" height="0"></canvas>
+  </div>
+  <div class="card">
+    <h2>Телеметрия кабин (аналитическая S-кривая в каждый момент)</h2>
+    <div class="sub" id="telem-now" style="margin-bottom:6px"></div>
     <div class="telem-label">положение x(t), м</div>
     <canvas id="ty" width="640" height="70"></canvas>
     <div class="telem-label">скорость v(t), м/с</div>
@@ -112,22 +139,24 @@
     </table>
   </div>
   <div class="card">
-    <h2>История ожидания (AWT, скользящее окно прогона)</h2>
+    <h2>История ожидания (AWT)</h2>
     <canvas id="chart" width="640" height="120"></canvas>
   </div>
 </div>
+<div id="overlay"><div class="card" id="report-card"></div></div>
 <script>
 "use strict";
+const CAR_COLORS = ["#4ea1ff", "#39c46f", "#ff9e3d", "#c792ea", "#ff5d5d", "#7fd4d4", "#e0c46b", "#9aa6ff"];
 const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
-const chart = document.getElementById("chart"), cctx = chart.getContext("2d");
 let S = null, prev = null, prevAt = 0, lastAt = 0;
+let R = null;            // выборка истории в режиме перемотки (null = live)
 const awtHistory = [], telem = [];
 
 const es = new EventSource("/events");
 es.onmessage = (e) => {
   const snap = JSON.parse(e.data);
-  if (!snap.car) return;
-  if (S && snap.t < S.t) { awtHistory.length = 0; telem.length = 0; } // reset/сценарий
+  if (!snap.cars) return;
+  if (S && snap.t < S.t) { awtHistory.length = 0; telem.length = 0; figures.clear(); }
   prev = S; prevAt = lastAt; S = snap; lastAt = performance.now();
   if (S.metrics && S.metrics.awt !== undefined) {
     const last = awtHistory[awtHistory.length - 1];
@@ -135,19 +164,20 @@ es.onmessage = (e) => {
     if (awtHistory.length > 600) awtHistory.shift();
   }
   const lt = telem[telem.length - 1];
-  if (!lt || lt.t !== S.t) telem.push({ t: S.t, y: S.car.y, v: S.car.v, a: S.car.a });
+  if (!lt || lt.t !== S.t)
+    telem.push({ t: S.t, cars: S.cars.map(c => [c.y, c.v, c.a]) });
   if (telem.length > 900) telem.shift();
 };
 
-function post(body) { fetch("/control", { method: "POST", body: JSON.stringify(body) }); }
+function post(body) { return fetch("/control", { method: "POST", body: JSON.stringify(body) }); }
 document.querySelectorAll("#speeds button[data-s]").forEach(b => b.onclick = () => {
   post({ speed: +b.dataset.s, paused: false });
   document.querySelectorAll("#speeds button").forEach(x => x.classList.remove("on"));
   b.classList.add("on");
 });
 const pauseBtn = document.getElementById("pause");
-pauseBtn.onclick = () => { const p = !(S && S.paused); post({ paused: p }); };
-document.getElementById("reset").onclick = () => { awtHistory.length = 0; post({ reset: true }); };
+pauseBtn.onclick = () => post({ paused: !(S && S.paused) });
+document.getElementById("reset").onclick = () => { goLive(); post({ reset: true }); };
 
 const scenarioSel = document.getElementById("scenario");
 fetch("/scenarios").then(r => r.json()).then(list => {
@@ -158,74 +188,186 @@ fetch("/scenarios").then(r => r.json()).then(list => {
   });
   if (S && S.scenario) scenarioSel.value = S.scenario.file;
 });
-scenarioSel.onchange = () => { awtHistory.length = 0; post({ scenario: scenarioSel.value }); };
+scenarioSel.onchange = () => { goLive(); post({ scenario: scenarioSel.value }); };
 
-function carY(snap) { return snap.car.y; }
-function lerpY() {
-  if (!prev || prev.t >= S.t) return carY(S);
+// --- перемотка истории -----------------------------------------------------
+const scrub = document.getElementById("scrub");
+let scrubPending = null, scrubBusy = false;
+scrub.oninput = () => {
+  if (!S || !S.hist_range) return;
+  const [t0, t1] = S.hist_range;
+  const t = t0 + (t1 - t0) * scrub.value / 1000;
+  if (scrub.value >= 999) { goLive(); return; }
+  scrubPending = t;
+  pumpScrub();
+};
+function pumpScrub() {
+  if (scrubBusy || scrubPending === null) return;
+  const t = scrubPending; scrubPending = null; scrubBusy = true;
+  fetch(`/history?at=${t}`).then(r => r.json()).then(s => {
+    if (s && s.t !== undefined) R = s;
+    scrubBusy = false; pumpScrub();
+  }).catch(() => scrubBusy = false);
+}
+function goLive() {
+  R = null; scrub.value = 1000;
+  document.getElementById("replay-badge").style.display = "none";
+  document.getElementById("live-btn").style.display = "none";
+  document.getElementById("scrub-time").textContent = "";
+}
+document.getElementById("live-btn").onclick = goLive;
+
+// --- человечки в очередях ----------------------------------------------------
+// figures: ключ "floor:dir" -> массив {x, tx, leaving}
+const figures = new Map();
+function reconcileFigures(qx0, doorX) {
+  if (!S) return;
+  for (let f = 0; f < S.floors; f++) {
+    for (const d of [1, -1]) {
+      const key = f + ":" + d;
+      const want = S.queues[f][d > 0 ? 0 : 1];
+      let arr = figures.get(key) || [];
+      let active = arr.filter(p => !p.leaving);
+      while (active.length > want) {            // сели в лифт / ушли
+        const p = active.shift();
+        p.leaving = true; p.tx = doorX;
+      }
+      for (let i = active.length; i < want; i++)  // новые подходят справа
+        arr.push({ x: cv.width - 8, tx: 0, leaving: false });
+      active = arr.filter(p => !p.leaving);
+      active.forEach((p, i) => p.tx = qx0 + i * 13);
+      arr = arr.filter(p => !(p.leaving && Math.abs(p.x - p.tx) < 4));
+      figures.set(key, arr);
+    }
+  }
+}
+function stepFigures() {
+  for (const arr of figures.values())
+    for (const p of arr) {
+      const dx = p.tx - p.x;
+      p.x += Math.abs(dx) < 2.2 ? dx : Math.sign(dx) * 2.2;
+    }
+}
+function drawPerson(g, x, y, color) {
+  g.strokeStyle = color; g.fillStyle = color; g.lineWidth = 1.4;
+  g.beginPath(); g.arc(x, y - 9, 2.6, 0, 7); g.fill();          // голова
+  g.beginPath(); g.moveTo(x, y - 6.5); g.lineTo(x, y - 2);      // тело
+  g.moveTo(x, y - 2); g.lineTo(x - 2.5, y + 2);                  // ноги
+  g.moveTo(x, y - 2); g.lineTo(x + 2.5, y + 2);
+  g.stroke(); g.lineWidth = 1;
+}
+
+// --- главная отрисовка --------------------------------------------------------
+function lerpCarY(i) {
+  if (!prev || prev.t >= S.t || !prev.cars[i]) return S.cars[i].y;
   const k = Math.min(1, (performance.now() - lastAt) / Math.max(1, lastAt - prevAt));
-  return carY(prev) + (carY(S) - carY(prev)) * k;
+  return prev.cars[i].y + (S.cars[i].y - prev.cars[i].y) * k;
 }
 
 function draw() {
   requestAnimationFrame(draw);
   if (!S) return;
-  const F = S.floors, fh = S.floor_height;
-  const H = Math.max(560, F * 38 + 40);
+  const F = S.floors, fh = S.floor_height, nCars = S.cars.length;
+  const shaftW = nCars > 2 ? 54 : 64, gap = 10, shaftX0 = 118;
+  const qx0 = shaftX0 + nCars * (shaftW + gap) + 16;
+  const width = qx0 + 13 * 13 + 20;
+  const H = Math.max(560, F * 36 + 40);
+  if (cv.width !== width) cv.width = width;
   if (cv.height !== H) cv.height = H;
-  const pad = 24, shaftX = 150, shaftW = 86;
+  const pad = 22;
   const pxPerM = (H - 2 * pad) / (F * fh);
   const yOf = m => H - pad - m * pxPerM;
   ctx.clearRect(0, 0, cv.width, cv.height);
   ctx.font = "12px system-ui";
 
+  const replay = R !== null;
+  const queues = replay ? R.queues : S.queues;
+  // этажи
   for (let f = 0; f < F; f++) {
     const y = yOf(f * fh);
-    ctx.strokeStyle = "#2b3442"; ctx.beginPath();
-    ctx.moveTo(pad, y); ctx.lineTo(cv.width - pad, y); ctx.stroke();
+    ctx.strokeStyle = "#232c39"; ctx.beginPath();
+    ctx.moveTo(12, y); ctx.lineTo(cv.width - 8, y); ctx.stroke();
     ctx.fillStyle = "#7d8da3";
-    ctx.fillText(f === 0 ? "холл" : String(f), pad + 2, y - 5);
-    const [up, down] = S.queues[f];
-    let x = shaftX + shaftW + 18;
-    ctx.fillStyle = "#39c46f";
-    for (let i = 0; i < Math.min(up, 12); i++) { ctx.beginPath(); ctx.arc(x + i * 11, y - 11, 4, 0, 7); ctx.fill(); }
-    if (up > 12) ctx.fillText("+" + (up - 12), x + 12 * 11, y - 7);
-    ctx.fillStyle = "#ff9e3d";
-    for (let i = 0; i < Math.min(down, 12); i++) { ctx.beginPath(); ctx.arc(x + i * 11, y - 24, 4, 0, 7); ctx.fill(); }
-    if (down > 12) ctx.fillText("+" + (down - 12), x + 12 * 11, y - 20);
-    if (S.car.calls.includes(f)) {
-      ctx.fillStyle = "#4ea1ff"; ctx.fillText("●", shaftX - 16, y - 12);
+    ctx.fillText(f === 0 ? "холл" : String(f), 14, y - 5);
+    // приказы из кабин (только live)
+    if (!replay) {
+      let cx = 50;
+      S.cars.forEach((c, i) => {
+        if (c.calls.includes(f)) {
+          ctx.fillStyle = CAR_COLORS[i]; ctx.fillText("●", cx, y - 4); cx += 12;
+        }
+      });
     }
   }
-  // шахта
-  ctx.strokeStyle = "#3c4a5e";
-  ctx.strokeRect(shaftX, yOf(F * fh) , shaftW, (F * fh) * pxPerM);
-  // кабина
-  const carH = fh * pxPerM * 0.86, yC = yOf(lerpY()) - carH;
-  ctx.fillStyle = "#223044"; ctx.strokeStyle = "#4ea1ff";
-  ctx.fillRect(shaftX + 4, yC, shaftW - 8, carH);
-  ctx.strokeRect(shaftX + 4, yC, shaftW - 8, carH);
-  // двери
-  const st = S.car.state;
-  const doorOpen = st === "transfer" ? 1 : st === "doors_opening" ? 0.6 : st === "doors_closing" ? 0.4 : 0;
-  const dw = (shaftW - 12) / 2 * (1 - doorOpen);
-  ctx.fillStyle = "#4ea1ff";
-  ctx.fillRect(shaftX + 6, yC + 3, dw, carH - 6);
-  ctx.fillRect(shaftX + shaftW - 6 - dw, yC + 3, dw, carH - 6);
-  // загрузка и направление
-  ctx.fillStyle = "#dbe4f0"; ctx.font = "bold 14px system-ui";
-  const arrow = S.car.direction > 0 ? "▲" : S.car.direction < 0 ? "▼" : "■";
-  ctx.fillText(`${arrow} ${S.car.load}/${S.car.capacity}`, shaftX + 12, yC - 6);
-  ctx.font = "12px system-ui";
+  // шахты и кабины
+  for (let i = 0; i < nCars; i++) {
+    const sx = shaftX0 + i * (shaftW + gap);
+    ctx.strokeStyle = "#3c4a5e";
+    ctx.strokeRect(sx, yOf(F * fh), shaftW, F * fh * pxPerM);
+    const carH = fh * pxPerM * 0.84;
+    const cy = replay ? R.cars[i][0] : lerpCarY(i);
+    const yC = yOf(cy) - carH;
+    const stateName = replay ? R.state_names[R.cars[i][1]] : S.cars[i].state;
+    const load = replay ? R.cars[i][2] : S.cars[i].load;
+    const oos = replay ? !!R.cars[i][3] : S.cars[i].oos;
+    const col = oos ? "#5b6676" : CAR_COLORS[i];
+    ctx.fillStyle = "#223044"; ctx.strokeStyle = col;
+    ctx.fillRect(sx + 3, yC, shaftW - 6, carH);
+    ctx.strokeRect(sx + 3, yC, shaftW - 6, carH);
+    const doorOpen = stateName === "transfer" ? 1 : stateName === "doors_opening" ? 0.6
+      : stateName === "doors_closing" ? 0.4 : 0;
+    const dw = (shaftW - 10) / 2 * (1 - doorOpen);
+    ctx.fillStyle = col;
+    ctx.fillRect(sx + 5, yC + 2, dw, carH - 4);
+    ctx.fillRect(sx + shaftW - 5 - dw, yC + 2, dw, carH - 4);
+    // пассажиры в кабине — точки
+    ctx.fillStyle = "#dbe4f0";
+    for (let k = 0; k < Math.min(load, 13); k++) {
+      const px = sx + 9 + (k % 4) * 11, py = yC + carH - 6 - Math.floor(k / 4) * 9;
+      ctx.beginPath(); ctx.arc(px, py, 2.6, 0, 7); ctx.fill();
+    }
+    const dir = replay ? "" : (S.cars[i].direction > 0 ? "▲" : S.cars[i].direction < 0 ? "▼" : "■");
+    ctx.fillStyle = oos ? "#ff5d5d" : "#dbe4f0"; ctx.font = "bold 13px system-ui";
+    ctx.fillText(oos ? "🔧" : `${dir} ${load}`, sx + 6, yC - 5);
+    ctx.font = "12px system-ui";
+    ctx.fillStyle = CAR_COLORS[i];
+    ctx.fillText(String(i + 1), sx + shaftW / 2 - 3, yOf(F * fh) - 6);
+  }
+  // очереди
+  if (replay) {
+    for (let f = 0; f < F; f++) {
+      const y = yOf(f * fh);
+      const [up, down] = queues[f];
+      ctx.fillStyle = "#39c46f";
+      for (let k = 0; k < Math.min(up, 13); k++) { ctx.beginPath(); ctx.arc(qx0 + k * 13, y - 10, 3.5, 0, 7); ctx.fill(); }
+      ctx.fillStyle = "#ff9e3d";
+      for (let k = 0; k < Math.min(down, 13); k++) { ctx.beginPath(); ctx.arc(qx0 + k * 13, y - 24, 3.5, 0, 7); ctx.fill(); }
+    }
+  } else {
+    reconcileFigures(qx0, shaftX0 + nCars * (shaftW + gap) - 6);
+    stepFigures();
+    for (let f = 0; f < F; f++) {
+      const y = yOf(f * fh);
+      for (const d of [1, -1]) {
+        const arr = figures.get(f + ":" + d) || [];
+        const color = d > 0 ? "#39c46f" : "#ff9e3d";
+        const dy = d > 0 ? -2 : -16;
+        arr.forEach(p => drawPerson(ctx, p.x, y + dy, color));
+        const count = S.queues[f][d > 0 ? 0 : 1];
+        if (count > 13) { ctx.fillStyle = color; ctx.fillText("+" + (count - 13), qx0 + 13 * 13, y + dy - 2); }
+      }
+    }
+  }
+  drawPanel();
+}
 
-  // панель
+function drawPanel() {
   if (S.scenario) {
     document.getElementById("title").textContent = S.scenario.name;
     document.getElementById("subtitle").textContent =
       `${S.floors} уровней · население ${S.scenario.population} чел · ` +
-      `кабина ${S.car.capacity} чел · v ${S.scenario.rated_speed} м/с · ` +
-      `a ${S.scenario.acceleration} м/с² · jerk ${S.scenario.jerk} м/с³ · ` +
-      `пик ${S.scenario.peak_percent}%/5 мин · full selective collective`;
+      `${S.cars.length} лифт(а) × ${S.cars[0].capacity} чел · v ${S.scenario.rated_speed} м/с · ` +
+      `a ${S.scenario.acceleration} · jerk ${S.scenario.jerk} · пик ${S.scenario.peak_percent}%/5 мин`;
     if (scenarioSel.value !== S.scenario.file && scenarioSel.options.length)
       scenarioSel.value = S.scenario.file;
   }
@@ -247,19 +389,60 @@ function draw() {
   setKpi("k-created", S.totals.created, 0, false);
   setKpi("k-delivered", S.totals.delivered, 0, false);
   setKpi("k-waiting", S.totals.waiting, 0, S.totals.waiting > 16);
-  setKpi("k-y", S.car.y, 1, false);
-  setKpi("k-v", S.car.v, 2, false);
-  setKpi("k-a", S.car.a, 2, false);
-  drawTelem("ty", "y", "#4ea1ff", 0, S.floors * S.floor_height);
-  const vmax = S.scenario ? S.scenario.rated_speed * 1.15 : 2;
-  drawTelem("tv", "v", "#39c46f", -vmax, vmax, true);
-  const amax = S.scenario ? S.scenario.acceleration * 1.25 : 1.5;
-  drawTelem("ta", "a", "#ff9e3d", -amax, amax, true);
+  setKpi("k-abandoned", S.totals.abandoned, 0, S.totals.abandoned > 0);
+  setKpi("k-energy", S.totals.energy_kwh, 2, false);
+  document.getElementById("telem-now").innerHTML = S.cars.map((c, i) =>
+    `<span style="color:${CAR_COLORS[i]}">лифт ${i + 1}: ${c.y.toFixed(1)} м · ` +
+    `${c.v.toFixed(2)} м/с · ${c.a.toFixed(2)} м/с²</span>`).join(" &nbsp; ");
+  drawTelemAll();
   drawHist();
   drawRecent();
   drawChart();
+  updateOosButtons();
+  if (R) {
+    document.getElementById("replay-badge").style.display = "inline-block";
+    document.getElementById("live-btn").style.display = "inline-block";
+    const d = R.t % 86400, hh = String(Math.floor(d / 3600)).padStart(2, "0"),
+      mm = String(Math.floor(d % 3600 / 60)).padStart(2, "0");
+    document.getElementById("scrub-time").textContent = `показан момент ${hh}:${mm}`;
+  }
 }
-function drawTelem(id, key, color, yMin, yMax, zeroLine) {
+function setKpi(id, v, dec, alert) {
+  const el = document.getElementById(id);
+  el.querySelector(".v").textContent = v === undefined ? "–" : (+v).toFixed(dec);
+  el.classList.toggle("alert", !!alert);
+}
+
+// --- кнопки вывода из строя -----------------------------------------------------
+let oosCount = -1;
+function updateOosButtons() {
+  const row = document.getElementById("oos-row");
+  if (S.cars.length !== oosCount) {
+    oosCount = S.cars.length;
+    row.innerHTML = "";
+    S.cars.forEach((c, i) => {
+      const b = document.createElement("button");
+      b.id = "oos-" + i;
+      b.onclick = () => post({ car_oos: [i, !S.cars[i].oos] });
+      row.appendChild(b);
+    });
+  }
+  S.cars.forEach((c, i) => {
+    const b = document.getElementById("oos-" + i);
+    b.textContent = c.oos ? `лифт ${i + 1}: 🔧 в ремонте` : `лифт ${i + 1}: 🟢 в строю`;
+    b.classList.toggle("danger", c.oos);
+  });
+}
+
+// --- графики ---------------------------------------------------------------------
+function drawTelemAll() {
+  drawTelemChart("ty", 0, 0, S.floors * S.floor_height, false);
+  const vmax = S.scenario ? S.scenario.rated_speed * 1.15 : 2;
+  drawTelemChart("tv", 1, -vmax, vmax, true);
+  const amax = S.scenario ? S.scenario.acceleration * 1.25 : 1.5;
+  drawTelemChart("ta", 2, -amax, amax, true);
+}
+function drawTelemChart(id, key, yMin, yMax, zeroLine) {
   const c = document.getElementById(id), g = c.getContext("2d");
   g.clearRect(0, 0, c.width, c.height);
   if (telem.length < 2) return;
@@ -270,9 +453,18 @@ function drawTelem(id, key, color, yMin, yMax, zeroLine) {
     g.strokeStyle = "#2b3442"; g.beginPath();
     g.moveTo(0, Y(0)); g.lineTo(c.width, Y(0)); g.stroke();
   }
-  g.strokeStyle = color; g.lineWidth = 1.5; g.beginPath();
-  telem.forEach((p, i) => i ? g.lineTo(X(p.t), Y(p[key])) : g.moveTo(X(p.t), Y(p[key])));
-  g.stroke(); g.lineWidth = 1;
+  const n = telem[0].cars.length;
+  for (let i = 0; i < n; i++) {
+    g.strokeStyle = CAR_COLORS[i]; g.lineWidth = 1.4; g.beginPath();
+    let started = false;
+    for (const p of telem) {
+      if (!p.cars[i]) continue;
+      const x = X(p.t), y = Y(p.cars[i][key]);
+      started ? g.lineTo(x, y) : g.moveTo(x, y); started = true;
+    }
+    g.stroke();
+  }
+  g.lineWidth = 1;
 }
 function drawHist() {
   const c = document.getElementById("hist"), g = c.getContext("2d");
@@ -284,8 +476,7 @@ function drawHist() {
   g.font = "10px system-ui";
   h.bins.forEach((b, i) => {
     const x = 4 + i * bw, bh = b / max * (c.height - 28);
-    const limit = i * h.bin_s >= 40; // за порогом ISO
-    g.fillStyle = limit ? "#ff5d5d" : "#4ea1ff";
+    g.fillStyle = i * h.bin_s >= 40 ? "#ff5d5d" : "#4ea1ff";
     g.fillRect(x, c.height - 16 - bh, bw - 3, bh);
     g.fillStyle = "#7d8da3";
     if (i % 2 === 0) g.fillText(i < n - 1 ? String(i * h.bin_s) : `${i * h.bin_s}+`, x, c.height - 4);
@@ -302,11 +493,7 @@ function drawRecent() {
            `<td>${p.transit.toFixed(1)}</td><td>${p.ttd.toFixed(1)}</td></tr>`;
   }).join("");
 }
-function setKpi(id, v, dec, alert) {
-  const el = document.getElementById(id);
-  el.querySelector(".v").textContent = v === undefined ? "–" : v.toFixed(dec);
-  el.classList.toggle("alert", !!alert);
-}
+const chart = document.getElementById("chart"), cctx = chart.getContext("2d");
 function drawChart() {
   cctx.clearRect(0, 0, chart.width, chart.height);
   if (awtHistory.length < 2) return;
@@ -322,6 +509,119 @@ function drawChart() {
   awtHistory.forEach((p, i) => i ? cctx.lineTo(X(p.t), Y(p.awt)) : cctx.moveTo(X(p.t), Y(p.awt)));
   cctx.stroke();
 }
+
+// --- траектории за прогон (обновление раз в 5 с) -----------------------------------
+function fmtClock(t) {
+  const d = t % 86400;
+  return String(Math.floor(d / 3600)).padStart(2, "0") + ":" +
+         String(Math.floor(d % 3600 / 60)).padStart(2, "0");
+}
+async function refreshTrajectory() {
+  try {
+    const tr = await (await fetch("/trajectory")).json();
+    const c = document.getElementById("traj"), g = c.getContext("2d");
+    g.clearRect(0, 0, c.width, c.height);
+    if (!tr.t || tr.t.length < 2) return;
+    const t0 = tr.t[0], t1 = tr.t[tr.t.length - 1];
+    const hMax = S ? S.floors * S.floor_height : 50;
+    const X = t => 30 + (t - t0) / (t1 - t0) * (c.width - 38);
+    const Y = y => c.height - 16 - y / hMax * (c.height - 24);
+    g.font = "10px system-ui"; g.fillStyle = "#7d8da3"; g.strokeStyle = "#232c39";
+    for (let k = 0; k <= 4; k++) {
+      const t = t0 + (t1 - t0) * k / 4;
+      g.fillText(fmtClock(t), X(t) - 12, c.height - 4);
+    }
+    if (S) for (let f = 0; f < S.floors; f += Math.ceil(S.floors / 6)) {
+      const y = Y(f * S.floor_height);
+      g.beginPath(); g.moveTo(30, y); g.lineTo(c.width - 8, y); g.stroke();
+      g.fillText(f === 0 ? "холл" : f, 4, y + 3);
+    }
+    tr.cars.forEach((ys, i) => {
+      g.strokeStyle = CAR_COLORS[i]; g.lineWidth = 1.2; g.beginPath();
+      ys.forEach((y, k) => k ? g.lineTo(X(tr.t[k]), Y(y)) : g.moveTo(X(tr.t[k]), Y(y)));
+      g.stroke();
+    });
+    g.lineWidth = 1;
+  } catch (e) { /* сервер перезапускается */ }
+}
+setInterval(refreshTrajectory, 5000);
+
+// --- тепловая карта (обновление раз в 10 с) ----------------------------------------
+function heatColor(v) {
+  if (v === null) return "#161c25";
+  const x = Math.min(1, v / 90);
+  const r = Math.round(40 + 215 * x), gg = Math.round(120 - 60 * x), b = Math.round(200 - 170 * x);
+  return `rgb(${r},${gg},${b})`;
+}
+let lastReport = null;
+async function refreshHeatmap() {
+  try {
+    lastReport = await (await fetch("/report")).json();
+    const hm = lastReport.heatmap;
+    const c = document.getElementById("heat"), g = c.getContext("2d");
+    const floors = hm[0].length;
+    const cellW = (c.width - 50) / 24, cellH = 13;
+    const hNeed = floors * cellH + 26;
+    if (c.height !== hNeed) c.height = hNeed;
+    g.clearRect(0, 0, c.width, c.height);
+    g.font = "10px system-ui";
+    for (let f = 0; f < floors; f++) {
+      const y = (floors - 1 - f) * cellH + 4;
+      g.fillStyle = "#7d8da3";
+      g.fillText(f === 0 ? "холл" : String(f), 4, y + 10);
+      for (let h = 0; h < 24; h++) {
+        g.fillStyle = heatColor(hm[h][f]);
+        g.fillRect(34 + h * cellW, y, cellW - 1, cellH - 1);
+      }
+    }
+    g.fillStyle = "#7d8da3";
+    for (let h = 0; h < 24; h += 3) g.fillText(String(h), 34 + h * cellW, c.height - 6);
+  } catch (e) { /* ignore */ }
+}
+setInterval(refreshHeatmap, 10000);
+setTimeout(() => { refreshTrajectory(); refreshHeatmap(); }, 1500);
+
+// --- отчёт ---------------------------------------------------------------------------
+document.getElementById("report-btn").onclick = async () => {
+  const r = await (await fetch("/report")).json();
+  const s = r.summary, v = r.verdicts;
+  const vrow = (key) => {
+    const [label, ok] = v[key];
+    const mark = ok === null ? "·" : ok ? "✔" : "✘";
+    const cls = ok === null ? "sub" : ok ? "verdict-ok" : "verdict-bad";
+    return `<tr><td>${label}</td><td class="${cls}" style="font-weight:700">${mark}</td></tr>`;
+  };
+  const hourly = r.hourly_awt.map(([awt, n], h) =>
+    awt === null ? "" :
+    `<tr><td>${String(h).padStart(2, "0")}:00</td><td>${awt.toFixed(1)}</td><td>${n}</td></tr>`
+  ).join("");
+  document.getElementById("report-card").innerHTML = `
+    <div class="row" style="justify-content:space-between">
+      <h1>Отчёт за прогон — ${r.scenario}</h1>
+      <button onclick="document.getElementById('overlay').style.display='none'">✕ закрыть</button>
+    </div>
+    <div class="sub">${r.sim_hours} ч модельного времени · ${r.trips} рейсов · ${s.passengers || 0} пассажиров</div>
+    <h2 style="margin-top:12px">Вердикты</h2>
+    <table>${vrow("awt_le_40")}${vrow("share90_le_10")}${vrow("no_abandoned")}</table>
+    <h2 style="margin-top:12px">Ключевые показатели</h2>
+    <table>
+      <tr><td>Среднее ожидание (AWT)</td><td>${(s.awt || 0).toFixed(1)} c</td></tr>
+      <tr><td>Медиана / p90 / максимум ожидания</td>
+          <td>${(s.wait_median || 0).toFixed(0)} / ${(s.wait_p90 || 0).toFixed(0)} / ${(s.wait_max || 0).toFixed(0)} c</td></tr>
+      <tr><td>Доля ожиданий дольше 90 c</td><td>${(r.share_over_90 * 100).toFixed(1)}%</td></tr>
+      <tr><td>Среднее время до цели (TTD)</td><td>${(s.ttd_mean || 0).toFixed(0)} c</td></tr>
+      <tr><td>Ушли, не дождавшись</td><td>${s.abandoned || 0}</td></tr>
+      <tr><td>Энергия (поездки + дежурное)</td>
+          <td>${r.energy_kwh} кВт·ч (${r.energy_kwh_per_day} кВт·ч/сутки)</td></tr>
+    </table>
+    <h2 style="margin-top:12px">Ожидание по часам</h2>
+    <table><thead><tr><th>час</th><th>AWT, c</th><th>пассажиров</th></tr></thead>${hourly}</table>`;
+  document.getElementById("overlay").style.display = "flex";
+};
+document.getElementById("overlay").onclick = (e) => {
+  if (e.target.id === "overlay") e.target.style.display = "none";
+};
+
 requestAnimationFrame(draw);
 </script>
 </body>
