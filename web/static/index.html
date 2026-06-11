@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Лифт — симуляция жилого дома</title>
+<style>
+  :root { --bg:#10141a; --panel:#1a2029; --line:#2b3442; --fg:#dbe4f0; --dim:#7d8da3;
+          --accent:#4ea1ff; --up:#39c46f; --down:#ff9e3d; --warn:#ff5d5d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.45 "Segoe UI", system-ui, sans-serif; display:flex; height:100vh; }
+  #shaft-wrap { flex:0 0 460px; padding:16px; overflow:hidden; }
+  canvas { background:var(--panel); border:1px solid var(--line); border-radius:10px; }
+  #side { flex:1; padding:16px 20px 16px 4px; overflow-y:auto; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+          padding:12px 16px; margin-bottom:12px; }
+  h1 { font-size:16px; margin:0 0 4px; } h2 { font-size:12px; margin:0 0 8px;
+       color:var(--dim); text-transform:uppercase; letter-spacing:.08em; }
+  #clock { font-size:34px; font-variant-numeric:tabular-nums; font-weight:600; }
+  .sub { color:var(--dim); font-size:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:8px; }
+  .kpi { background:var(--bg); border-radius:8px; padding:8px 10px; }
+  .kpi .v { font-size:20px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .kpi .l { font-size:11px; color:var(--dim); }
+  .kpi.alert .v { color:var(--warn); }
+  button { background:var(--bg); color:var(--fg); border:1px solid var(--line);
+           border-radius:7px; padding:6px 12px; cursor:pointer; font:inherit; }
+  button:hover { border-color:var(--accent); }
+  button.on { background:var(--accent); color:#08111e; border-color:var(--accent); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .bar { height:8px; border-radius:4px; background:var(--bg); overflow:hidden;
+         display:flex; margin-top:6px; }
+  .bar i { display:block; height:100%; }
+</style>
+</head>
+<body>
+<div id="shaft-wrap"><canvas id="cv" width="428" height="0"></canvas></div>
+<div id="side">
+  <div class="card">
+    <h1>Пассажирский лифт жилого дома — живая симуляция</h1>
+    <div class="sub">17 уровней · 630 кг / 8 чел · 1,6 м/с · a 1,0 м/с² · jerk 1,0 м/с³ ·
+      алгоритм full selective collective · спрос: суточный профиль жилого дома (пик 6%/5 мин)</div>
+  </div>
+  <div class="card row" style="justify-content:space-between">
+    <div><div id="clock">--:--:--</div><div class="sub">модельное время</div></div>
+    <div>
+      <div class="row" id="speeds">
+        <button data-s="1">×1</button><button data-s="10">×10</button>
+        <button data-s="30" class="on">×30</button><button data-s="120">×120</button>
+        <button data-s="600">×600</button>
+        <button id="pause">⏸ пауза</button><button id="reset">⟲ заново</button>
+      </div>
+      <div class="sub" id="demand-line" style="margin-top:6px"></div>
+      <div class="bar" id="mixbar" title="входящие / исходящие / межэтажные"></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Качество обслуживания (с начала прогона)</h2>
+    <div class="grid">
+      <div class="kpi" id="k-awt"><div class="v">–</div><div class="l">ср. ожидание AWT, c (ISO ≤ 40)</div></div>
+      <div class="kpi" id="k-p90"><div class="v">–</div><div class="l">ожидание p90, c</div></div>
+      <div class="kpi" id="k-max"><div class="v">–</div><div class="l">макс. ожидание, c</div></div>
+      <div class="kpi" id="k-ttd"><div class="v">–</div><div class="l">ср. время до цели, c</div></div>
+      <div class="kpi" id="k-transit"><div class="v">–</div><div class="l">ср. время в кабине, c</div></div>
+      <div class="kpi" id="k-load"><div class="v">–</div><div class="l">ср. загрузка рейса, чел</div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Поток</h2>
+    <div class="grid">
+      <div class="kpi" id="k-created"><div class="v">–</div><div class="l">пассажиров создано</div></div>
+      <div class="kpi" id="k-delivered"><div class="v">–</div><div class="l">доставлено</div></div>
+      <div class="kpi" id="k-waiting"><div class="v">–</div><div class="l">ждут сейчас</div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>История ожидания (AWT, скользящее окно прогона)</h2>
+    <canvas id="chart" width="640" height="120"></canvas>
+  </div>
+</div>
+<script>
+"use strict";
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const chart = document.getElementById("chart"), cctx = chart.getContext("2d");
+let S = null, prev = null, prevAt = 0, lastAt = 0;
+const awtHistory = [];
+
+const es = new EventSource("/events");
+es.onmessage = (e) => {
+  const snap = JSON.parse(e.data);
+  if (!snap.car) return;
+  prev = S; prevAt = lastAt; S = snap; lastAt = performance.now();
+  if (S.metrics && S.metrics.awt !== undefined) {
+    const last = awtHistory[awtHistory.length - 1];
+    if (!last || last.t !== S.t) awtHistory.push({ t: S.t, awt: S.metrics.awt });
+    if (awtHistory.length > 600) awtHistory.shift();
+  }
+};
+
+function post(body) { fetch("/control", { method: "POST", body: JSON.stringify(body) }); }
+document.querySelectorAll("#speeds button[data-s]").forEach(b => b.onclick = () => {
+  post({ speed: +b.dataset.s, paused: false });
+  document.querySelectorAll("#speeds button").forEach(x => x.classList.remove("on"));
+  b.classList.add("on");
+});
+const pauseBtn = document.getElementById("pause");
+pauseBtn.onclick = () => { const p = !(S && S.paused); post({ paused: p }); };
+document.getElementById("reset").onclick = () => { awtHistory.length = 0; post({ reset: true }); };
+
+function carY(snap) { return snap.car.y; }
+function lerpY() {
+  if (!prev || prev.t >= S.t) return carY(S);
+  const k = Math.min(1, (performance.now() - lastAt) / Math.max(1, lastAt - prevAt));
+  return carY(prev) + (carY(S) - carY(prev)) * k;
+}
+
+function draw() {
+  requestAnimationFrame(draw);
+  if (!S) return;
+  const F = S.floors, fh = S.floor_height;
+  const H = Math.max(560, F * 38 + 40);
+  if (cv.height !== H) cv.height = H;
+  const pad = 24, shaftX = 150, shaftW = 86;
+  const pxPerM = (H - 2 * pad) / (F * fh);
+  const yOf = m => H - pad - m * pxPerM;
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.font = "12px system-ui";
+
+  for (let f = 0; f < F; f++) {
+    const y = yOf(f * fh);
+    ctx.strokeStyle = "#2b3442"; ctx.beginPath();
+    ctx.moveTo(pad, y); ctx.lineTo(cv.width - pad, y); ctx.stroke();
+    ctx.fillStyle = "#7d8da3";
+    ctx.fillText(f === 0 ? "холл" : String(f), pad + 2, y - 5);
+    const [up, down] = S.queues[f];
+    let x = shaftX + shaftW + 18;
+    ctx.fillStyle = "#39c46f";
+    for (let i = 0; i < Math.min(up, 12); i++) { ctx.beginPath(); ctx.arc(x + i * 11, y - 11, 4, 0, 7); ctx.fill(); }
+    if (up > 12) ctx.fillText("+" + (up - 12), x + 12 * 11, y - 7);
+    ctx.fillStyle = "#ff9e3d";
+    for (let i = 0; i < Math.min(down, 12); i++) { ctx.beginPath(); ctx.arc(x + i * 11, y - 24, 4, 0, 7); ctx.fill(); }
+    if (down > 12) ctx.fillText("+" + (down - 12), x + 12 * 11, y - 20);
+    if (S.car.calls.includes(f)) {
+      ctx.fillStyle = "#4ea1ff"; ctx.fillText("●", shaftX - 16, y - 12);
+    }
+  }
+  // шахта
+  ctx.strokeStyle = "#3c4a5e";
+  ctx.strokeRect(shaftX, yOf(F * fh) , shaftW, (F * fh) * pxPerM);
+  // кабина
+  const carH = fh * pxPerM * 0.86, yC = yOf(lerpY()) - carH;
+  ctx.fillStyle = "#223044"; ctx.strokeStyle = "#4ea1ff";
+  ctx.fillRect(shaftX + 4, yC, shaftW - 8, carH);
+  ctx.strokeRect(shaftX + 4, yC, shaftW - 8, carH);
+  // двери
+  const st = S.car.state;
+  const doorOpen = st === "transfer" ? 1 : st === "doors_opening" ? 0.6 : st === "doors_closing" ? 0.4 : 0;
+  const dw = (shaftW - 12) / 2 * (1 - doorOpen);
+  ctx.fillStyle = "#4ea1ff";
+  ctx.fillRect(shaftX + 6, yC + 3, dw, carH - 6);
+  ctx.fillRect(shaftX + shaftW - 6 - dw, yC + 3, dw, carH - 6);
+  // загрузка и направление
+  ctx.fillStyle = "#dbe4f0"; ctx.font = "bold 14px system-ui";
+  const arrow = S.car.direction > 0 ? "▲" : S.car.direction < 0 ? "▼" : "■";
+  ctx.fillText(`${arrow} ${S.car.load}/${S.car.capacity}`, shaftX + 12, yC - 6);
+  ctx.font = "12px system-ui";
+
+  // панель
+  document.getElementById("clock").textContent = S.clock;
+  pauseBtn.textContent = S.paused ? "▶ дальше" : "⏸ пауза";
+  document.getElementById("demand-line").textContent =
+    `спрос сейчас: ${S.demand.percent_5min}% населения / 5 мин`;
+  const [mi, mo, mx] = S.demand.mix, mb = document.getElementById("mixbar");
+  mb.innerHTML = `<i style="width:${mi*100}%;background:var(--up)"></i>` +
+                 `<i style="width:${mo*100}%;background:var(--down)"></i>` +
+                 `<i style="width:${mx*100}%;background:var(--accent)"></i>`;
+  const m = S.metrics || {};
+  setKpi("k-awt", m.awt, 1, m.awt > 40);
+  setKpi("k-p90", m.wait_p90, 0, false);
+  setKpi("k-max", m.wait_max, 0, m.wait_max > 90);
+  setKpi("k-ttd", m.ttd_mean, 0, false);
+  setKpi("k-transit", m.transit_mean, 0, false);
+  setKpi("k-load", m.load_mean, 1, false);
+  setKpi("k-created", S.totals.created, 0, false);
+  setKpi("k-delivered", S.totals.delivered, 0, false);
+  setKpi("k-waiting", S.totals.waiting, 0, S.totals.waiting > 16);
+  drawChart();
+}
+function setKpi(id, v, dec, alert) {
+  const el = document.getElementById(id);
+  el.querySelector(".v").textContent = v === undefined ? "–" : v.toFixed(dec);
+  el.classList.toggle("alert", !!alert);
+}
+function drawChart() {
+  cctx.clearRect(0, 0, chart.width, chart.height);
+  if (awtHistory.length < 2) return;
+  const xs = awtHistory.map(p => p.t), ys = awtHistory.map(p => p.awt);
+  const x0 = xs[0], x1 = xs[xs.length - 1], yMax = Math.max(45, ...ys) * 1.1;
+  const X = t => 4 + (t - x0) / Math.max(1, x1 - x0) * (chart.width - 8);
+  const Y = v => chart.height - 4 - v / yMax * (chart.height - 8);
+  cctx.strokeStyle = "#ff5d5d55"; cctx.setLineDash([4, 4]);
+  cctx.beginPath(); cctx.moveTo(0, Y(40)); cctx.lineTo(chart.width, Y(40)); cctx.stroke();
+  cctx.setLineDash([]);
+  cctx.fillStyle = "#7d8da3"; cctx.fillText("ISO 40 c", 8, Y(40) - 4);
+  cctx.strokeStyle = "#4ea1ff"; cctx.beginPath();
+  awtHistory.forEach((p, i) => i ? cctx.lineTo(X(p.t), Y(p.awt)) : cctx.moveTo(X(p.t), Y(p.awt)));
+  cctx.stroke();
+}
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
