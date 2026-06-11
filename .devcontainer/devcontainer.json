@@ -1,0 +1,12 @@
+{
+  "name": "elevator-sim",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "forwardPorts": [8000],
+  "portsAttributes": {
+    "8000": {
+      "label": "Симуляция лифта",
+      "onAutoForward": "openBrowserOnce"
+    }
+  },
+  "postStartCommand": "nohup python3 -m web.server --port 8000 > /tmp/web.log 2>&1 &"
+}
