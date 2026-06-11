@@ -11,13 +11,18 @@ from __future__ import annotations
 import argparse
 
 from sim import Building, CarParams, run_experiment
+from sim.scenario import load_scenario
 from sim.traffic import constant_profile
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--floors", type=int, default=17)
-    ap.add_argument("--percent", type=float, default=6.0,
+    ap.add_argument("--scenario", default=None,
+                    help="JSON-сценарий (scenarios/*.json): здание и кабина "
+                         "берутся из него; спрос — постоянный по флагам ниже")
+    ap.add_argument("--floors", type=int, default=17,
+                    help="этажей (если нет --scenario)")
+    ap.add_argument("--percent", type=float, default=None,
                     help="спрос, %% населения за 5 мин (ISO residential: 6)")
     ap.add_argument("--mix", default="0.45,0.45,0.10",
                     help="доли in,out,interfloor")
@@ -26,15 +31,26 @@ def main() -> None:
                     help="длительность сценария (ISO: >= 120 мин)")
     args = ap.parse_args()
 
-    mi, mo, mx = (float(x) for x in args.mix.split(","))
-    building = Building(floors=args.floors)
-    profile = constant_profile(args.percent, mi, mo, mx)
+    if args.scenario:
+        sc = load_scenario(args.scenario)
+        building, car = sc.building, sc.car
+        percent = args.percent if args.percent is not None else sc.profile.peak_percent
+        mean_batch = sc.profile.mean_batch
+        name = sc.name
+    else:
+        building, car = Building(floors=args.floors), CarParams()
+        percent = args.percent if args.percent is not None else 6.0
+        mean_batch = 1.2
+        name = f"{args.floors} уровней (по умолчанию)"
 
-    print(f"Здание: {args.floors} уровней, население {building.total_population:.0f} чел")
-    print(f"Спрос: {args.percent}%/5 мин, микс in/out/inter = {mi}/{mo}/{mx}")
+    mi, mo, mx = (float(x) for x in args.mix.split(","))
+    profile = constant_profile(percent, mi, mo, mx, mean_batch=mean_batch)
+
+    print(f"Сценарий: {name}; население {building.total_population:.0f} чел")
+    print(f"Спрос: {percent}%/5 мин, микс in/out/inter = {mi}/{mo}/{mx}")
     print(f"Прогон: {args.minutes:.0f} мин x {args.reps} реплик, warm-up 15 мин\n")
 
-    res = run_experiment(building, profile, CarParams(),
+    res = run_experiment(building, profile, car,
                          duration=args.minutes * 60.0,
                          replications=args.reps)
     print(res.fmt())

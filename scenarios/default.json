@@ -1,0 +1,34 @@
+{
+  "name": "Базовая 17-этажка (ISO residential)",
+  "building": {
+    "floors": 17,
+    "floor_height": 3.0,
+    "apartments_per_floor": 4,
+    "persons_per_apartment": 2.7
+  },
+  "car": {
+    "rated_speed": 1.6,
+    "acceleration": 1.0,
+    "jerk": 1.0,
+    "capacity": 8,
+    "door_open": 2.0,
+    "door_close": 3.0,
+    "dwell_hall": 4.0,
+    "dwell_car": 2.0,
+    "transfer_time": 1.2,
+    "home_floor": 0,
+    "home_timeout": 60.0
+  },
+  "demand": {
+    "peak_percent": 6.0,
+    "mean_batch": 1.2,
+    "day_profile": [
+      {"from_hour": 0.0,  "intensity": 0.05, "in": 0.50, "out": 0.50, "interfloor": 0.00},
+      {"from_hour": 6.0,  "intensity": 1.00, "in": 0.15, "out": 0.75, "interfloor": 0.10},
+      {"from_hour": 9.0,  "intensity": 0.35, "in": 0.40, "out": 0.40, "interfloor": 0.20},
+      {"from_hour": 16.0, "intensity": 0.90, "in": 0.55, "out": 0.30, "interfloor": 0.15},
+      {"from_hour": 20.0, "intensity": 0.40, "in": 0.45, "out": 0.45, "interfloor": 0.10}
+    ]
+  },
+  "web": {"start_hour": 6.0}
+}

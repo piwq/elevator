@@ -1,0 +1,24 @@
+{
+  "name": "Панельная 9-этажка (лифт 450 кг, 1 м/с)",
+  "building": {
+    "floors": 10,
+    "floor_height": 2.8,
+    "apartments_per_floor": 4,
+    "persons_per_apartment": 2.5
+  },
+  "car": {
+    "rated_speed": 1.0,
+    "acceleration": 0.8,
+    "jerk": 1.0,
+    "capacity": 6,
+    "door_open": 2.5,
+    "door_close": 3.5,
+    "transfer_time": 1.5,
+    "home_timeout": 30.0
+  },
+  "demand": {
+    "peak_percent": 5.5,
+    "mean_batch": 1.15
+  },
+  "web": {"start_hour": 7.0}
+}

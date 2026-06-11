@@ -1,0 +1,30 @@
+{
+  "name": "Башня 25 этажей (1000 кг, 2.5 м/с) — стресс для одного лифта",
+  "building": {
+    "floors": 25,
+    "floor_height": 3.1,
+    "apartments_per_floor": 6,
+    "persons_per_apartment": 2.4
+  },
+  "car": {
+    "rated_speed": 2.5,
+    "acceleration": 1.0,
+    "jerk": 1.2,
+    "capacity": 13,
+    "door_open": 1.8,
+    "door_close": 2.9,
+    "transfer_time": 1.2
+  },
+  "demand": {
+    "peak_percent": 6.0,
+    "mean_batch": 1.3,
+    "day_profile": [
+      {"from_hour": 0.0,  "intensity": 0.05, "in": 0.50, "out": 0.50, "interfloor": 0.00},
+      {"from_hour": 6.5,  "intensity": 1.00, "in": 0.15, "out": 0.75, "interfloor": 0.10},
+      {"from_hour": 9.5,  "intensity": 0.35, "in": 0.40, "out": 0.40, "interfloor": 0.20},
+      {"from_hour": 17.0, "intensity": 0.95, "in": 0.55, "out": 0.30, "interfloor": 0.15},
+      {"from_hour": 21.0, "intensity": 0.35, "in": 0.45, "out": 0.45, "interfloor": 0.10}
+    ]
+  },
+  "web": {"start_hour": 6.5}
+}

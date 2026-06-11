@@ -16,27 +16,38 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from sim import Building, CarParams, DemandProfile, RESIDENTIAL_DAY, Simulation
+from sim import Simulation
+from sim.scenario import Scenario, load_scenario
 
 STATIC = Path(__file__).parent / "static"
-START_HOUR = 6.0  # старт в начало утреннего пика
+SCENARIOS = Path(__file__).parent.parent / "scenarios"
 HORIZON_DAYS = 30
 
 
-def make_sim(seed: int = 0) -> Simulation:
-    building = Building()
-    profile = DemandProfile(RESIDENTIAL_DAY, peak_percent=6.0)
-    sim = Simulation(building, profile, CarParams(), seed=seed,
-                     t_start=START_HOUR * 3600.0)
-    sim.start_stream(START_HOUR * 3600.0 + HORIZON_DAYS * 86400.0)
+def make_sim(sc: Scenario, seed: int = 0) -> Simulation:
+    sim = Simulation(sc.building, sc.profile, sc.car, seed=seed,
+                     t_start=sc.start_hour * 3600.0)
+    sim.start_stream(sc.start_hour * 3600.0 + HORIZON_DAYS * 86400.0)
     return sim
 
 
+def list_scenarios() -> list:
+    out = []
+    for p in sorted(SCENARIOS.glob("*.json")):
+        try:
+            out.append({"file": p.name, "name": load_scenario(p).name})
+        except (ValueError, json.JSONDecodeError) as e:
+            out.append({"file": p.name, "name": f"{p.name} (ошибка: {e})"})
+    return out
+
+
 class SimRunner(threading.Thread):
-    def __init__(self, speed: float) -> None:
+    def __init__(self, scenario_file: str, speed: float) -> None:
         super().__init__(daemon=True)
         self.lock = threading.Lock()
-        self.sim = make_sim()
+        self.scenario_file = scenario_file
+        self.scenario = load_scenario(SCENARIOS / scenario_file)
+        self.sim = make_sim(self.scenario)
         self.speed = speed
         self.paused = False
         self.snapshot: dict = {}
@@ -62,9 +73,14 @@ class SimRunner(threading.Thread):
                 self.speed = max(0.1, min(600.0, float(cmd["speed"])))
             if "paused" in cmd:
                 self.paused = bool(cmd["paused"])
+            if "scenario" in cmd:
+                file = Path(str(cmd["scenario"])).name  # без выхода из каталога
+                self.scenario = load_scenario(SCENARIOS / file)
+                self.scenario_file = file
+                cmd["reset"] = True
             if cmd.get("reset"):
                 self._seed += 1
-                self.sim = make_sim(self._seed)
+                self.sim = make_sim(self.scenario, self._seed)
                 self._last_summary, self._summary_at = {}, 0.0
 
     def _make_snapshot(self) -> dict:
@@ -78,6 +94,15 @@ class SimRunner(threading.Thread):
         rate_5min = sim.profile.passenger_rate(t, pop) * 300.0
         day_s = t % 86400.0
         return {
+            "scenario": {
+                "file": self.scenario_file,
+                "name": self.scenario.name,
+                "population": round(pop),
+                "rated_speed": car.p.rated_speed,
+                "acceleration": car.p.acceleration,
+                "jerk": car.p.jerk,
+                "peak_percent": sim.profile.peak_percent,
+            },
             "t": t,
             "clock": f"{int(day_s // 3600):02d}:{int(day_s % 3600 // 60):02d}:{int(day_s % 60):02d}",
             "speed": self.speed,
@@ -124,6 +149,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        elif self.path == "/scenarios":
+            body = json.dumps(list_scenarios()).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif self.path == "/events":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -145,7 +177,15 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/control":
             length = int(self.headers.get("Content-Length", 0))
             cmd = json.loads(self.rfile.read(length) or b"{}")
-            RUNNER.control(cmd)
+            try:
+                RUNNER.control(cmd)
+            except (ValueError, OSError, json.JSONDecodeError) as e:
+                body = str(e).encode()
+                self.send_response(400)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             self.send_response(204)
             self.end_headers()
         else:
@@ -158,8 +198,10 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--speed", type=float, default=30.0,
                     help="ускорение модельного времени")
+    ap.add_argument("--scenario", default="default.json",
+                    help="файл из каталога scenarios/")
     args = ap.parse_args()
-    RUNNER = SimRunner(speed=args.speed)
+    RUNNER = SimRunner(args.scenario, speed=args.speed)
     RUNNER.start()
     server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
     print(f"Симуляция: http://localhost:{args.port}  (скорость x{args.speed})")

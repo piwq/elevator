@@ -36,10 +36,16 @@
 <body>
 <div id="shaft-wrap"><canvas id="cv" width="428" height="0"></canvas></div>
 <div id="side">
-  <div class="card">
-    <h1>Пассажирский лифт жилого дома — живая симуляция</h1>
-    <div class="sub">17 уровней · 630 кг / 8 чел · 1,6 м/с · a 1,0 м/с² · jerk 1,0 м/с³ ·
-      алгоритм full selective collective · спрос: суточный профиль жилого дома (пик 6%/5 мин)</div>
+  <div class="card row" style="justify-content:space-between">
+    <div>
+      <h1 id="title">Пассажирский лифт жилого дома — живая симуляция</h1>
+      <div class="sub" id="subtitle">подключение…</div>
+    </div>
+    <div>
+      <div class="sub" style="margin-bottom:4px">сценарий (scenarios/*.json)</div>
+      <select id="scenario" style="background:var(--bg);color:var(--fg);
+        border:1px solid var(--line);border-radius:7px;padding:6px 10px;font:inherit"></select>
+    </div>
   </div>
   <div class="card row" style="justify-content:space-between">
     <div><div id="clock">--:--:--</div><div class="sub">модельное время</div></div>
@@ -107,6 +113,17 @@ const pauseBtn = document.getElementById("pause");
 pauseBtn.onclick = () => { const p = !(S && S.paused); post({ paused: p }); };
 document.getElementById("reset").onclick = () => { awtHistory.length = 0; post({ reset: true }); };
 
+const scenarioSel = document.getElementById("scenario");
+fetch("/scenarios").then(r => r.json()).then(list => {
+  list.forEach(s => {
+    const o = document.createElement("option");
+    o.value = s.file; o.textContent = s.name;
+    scenarioSel.appendChild(o);
+  });
+  if (S && S.scenario) scenarioSel.value = S.scenario.file;
+});
+scenarioSel.onchange = () => { awtHistory.length = 0; post({ scenario: scenarioSel.value }); };
+
 function carY(snap) { return snap.car.y; }
 function lerpY() {
   if (!prev || prev.t >= S.t) return carY(S);
@@ -166,6 +183,16 @@ function draw() {
   ctx.font = "12px system-ui";
 
   // панель
+  if (S.scenario) {
+    document.getElementById("title").textContent = S.scenario.name;
+    document.getElementById("subtitle").textContent =
+      `${S.floors} уровней · население ${S.scenario.population} чел · ` +
+      `кабина ${S.car.capacity} чел · v ${S.scenario.rated_speed} м/с · ` +
+      `a ${S.scenario.acceleration} м/с² · jerk ${S.scenario.jerk} м/с³ · ` +
+      `пик ${S.scenario.peak_percent}%/5 мин · full selective collective`;
+    if (scenarioSel.value !== S.scenario.file && scenarioSel.options.length)
+      scenarioSel.value = S.scenario.file;
+  }
   document.getElementById("clock").textContent = S.clock;
   pauseBtn.textContent = S.paused ? "▶ дальше" : "⏸ пауза";
   document.getElementById("demand-line").textContent =
