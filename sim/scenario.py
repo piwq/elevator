@@ -55,6 +55,7 @@ class Scenario:
     start_hour: float = 6.0
     n_cars: int = 1  # кабин в группе
     patience: float = 0.0  # сек ожидания до ухода пешком; 0 — без ухода
+    dispatcher: str = "nearest_car"  # nearest_car | eta
 
 
 def _take(section: dict, allowed: set, where: str) -> dict:
@@ -65,10 +66,9 @@ def _take(section: dict, allowed: set, where: str) -> dict:
     return section
 
 
-def load_scenario(path: str | Path) -> Scenario:
-    path = Path(path)
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    _take(raw, {"name", "building", "car", "cars", "demand", "web"}, str(path))
+def scenario_from_dict(raw: dict, fallback_name: str = "custom") -> Scenario:
+    _take(raw, {"name", "building", "car", "cars", "dispatcher", "demand", "web"},
+          "сценарий")
 
     b_kwargs = _take(raw.get("building", {}),
                      {f.name for f in dataclasses.fields(Building) if f.init},
@@ -84,6 +84,9 @@ def load_scenario(path: str | Path) -> Scenario:
     n_cars = int(raw.get("cars", 1))
     if not 1 <= n_cars <= 8:
         raise ValueError("cars: ожидается от 1 до 8 кабин")
+    dispatcher = str(raw.get("dispatcher", "nearest_car"))
+    if dispatcher not in ("nearest_car", "eta"):
+        raise ValueError("dispatcher: nearest_car или eta")
 
     demand = _take(raw.get("demand", {}),
                    {"peak_percent", "mean_batch", "day_profile", "patience_s"},
@@ -113,11 +116,18 @@ def load_scenario(path: str | Path) -> Scenario:
 
     web = _take(raw.get("web", {}), {"start_hour"}, "web")
     return Scenario(
-        name=raw.get("name", path.stem),
+        name=raw.get("name", fallback_name),
         building=building,
         car=car,
         profile=profile,
         start_hour=float(web.get("start_hour", 6.0)),
         n_cars=n_cars,
         patience=float(demand.get("patience_s", 0.0)),
+        dispatcher=dispatcher,
     )
+
+
+def load_scenario(path: str | Path) -> Scenario:
+    path = Path(path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return scenario_from_dict(raw, fallback_name=path.stem)

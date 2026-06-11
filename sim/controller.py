@@ -73,17 +73,40 @@ class GroupCollective:
             return (n + 1) - dist
         return 1.0
 
+    def _suitability(self, car, floor: int, d: int) -> float:
+        """Чем больше, тем лучше кабина подходит вызову (стратегия группы)."""
+        return self._figure_of_suitability(car, floor, d)
+
     def _ensure_assigned(self, floor: int, d: int) -> None:
         if not self.waiting[floor][d]:
             self.assigned.pop((floor, d), None)
             return
-        best = max(self.cars,
-                   key=lambda c: self._figure_of_suitability(c, floor, d))
-        if self._figure_of_suitability(best, floor, d) <= 0:
+        active = [c for c in self.cars if not c.out_of_service]
+        if not active:
             return  # все кабины выведены из обслуживания
+        best = max(active, key=lambda c: self._suitability(c, floor, d))
         if self.assigned.get((floor, d)) is not best:
             self.assigned[(floor, d)] = best
             best.notify_call()
+
+    def park_floor(self, car) -> int:
+        """Этаж парковки свободной кабины: первая — в холл (большинство
+        поездок начинается там), следующие — в центр тяжести населения
+        верхних этажей (зонная парковка, ср. Brand & Nikovski 2004)."""
+        home = car.p.home_floor
+        from .car import CarState
+        others_home = any(
+            c is not car and not c.out_of_service
+            and c.state == CarState.IDLE and c.floor == home
+            for c in self.cars)
+        if not others_home:
+            return home
+        pop = car.building.population
+        total = sum(pop[1:])
+        if total <= 0:
+            return home
+        centroid = sum(f * p for f, p in enumerate(pop)) / total
+        return max(1, min(self.floors - 1, round(centroid)))
 
     def rebalance(self) -> None:
         """Пересмотр всех назначений (кабина освободилась / вышла из строя)."""
@@ -192,6 +215,51 @@ class GroupCollective:
         start = floor if include_current else floor + d
         return list(range(start, self.floors if d > 0 else -1, d))
 
+
+class ETACollective(GroupCollective):
+    """Назначение вызова кабине с минимальной оценкой времени прибытия.
+
+    Современный подход групповых контроллеров (KONE/Otis, RESEARCH.md §4.2).
+    Оценка эвристическая: время полёта по кинематике + штраф за каждую
+    промежуточную обязательную остановку; маршрут через реверс — две ноги
+    через крайний закреплённый вызов.
+    """
+
+    def _suitability(self, car, floor: int, d: int) -> float:
+        return -self._eta(car, floor, d)
+
+    def _eta(self, car, floor: int, d: int) -> float:
+        from .kinematics import trip_time
+        p = car.p
+        stop_cost = (p.door_open + p.door_close + p.dwell_hall
+                     + 2 * p.transfer_time)
+
+        def fly(n_floors: int) -> float:
+            if n_floors <= 0:
+                return 0.0
+            return trip_time(n_floors * car.building.floor_height,
+                             p.rated_speed, p.acceleration, p.jerk)
+
+        commits = set(car.car_calls)
+        commits.update(f for (f, dd), c in self.assigned.items() if c is car)
+        if car.direction == 0:
+            return fly(abs(car.floor - floor))
+        toward = (car.direction > 0 and floor >= car.floor) or \
+                 (car.direction < 0 and floor <= car.floor)
+        if toward and d == car.direction:
+            between = sum(1 for f in commits
+                          if min(car.floor, floor) < f < max(car.floor, floor))
+            return fly(abs(car.floor - floor)) + between * stop_cost
+        # через реверс: доехать до крайнего обязательства, вернуться к вызову
+        if car.direction > 0:
+            extreme = max(commits | {car.floor, floor if toward else car.floor})
+        else:
+            extreme = min(commits | {car.floor, floor if toward else car.floor})
+        leg1, leg2 = abs(extreme - car.floor), abs(extreme - floor)
+        return fly(leg1) + fly(leg2) + (len(commits) + 1) * stop_cost
+
+
+DISPATCHERS = {"nearest_car": GroupCollective, "eta": ETACollective}
 
 # единственная кабина — частный случай группового управления
 SelectiveCollective = GroupCollective

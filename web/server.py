@@ -17,19 +17,58 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from sim import Simulation
-from sim.scenario import Scenario, load_scenario
+from sim.scenario import Scenario, load_scenario, scenario_from_dict
 
 STATIC = Path(__file__).parent / "static"
 SCENARIOS = Path(__file__).parent.parent / "scenarios"
+RUNS_DIR = Path(__file__).parent.parent / "runs"
 HORIZON_DAYS = 30
 
 
-def make_sim(sc: Scenario, seed: int = 0) -> Simulation:
-    sim = Simulation(sc.building, sc.profile, sc.car, seed=seed,
-                     t_start=sc.start_hour * 3600.0,
-                     n_cars=sc.n_cars, patience=sc.patience)
-    sim.start_stream(sc.start_hour * 3600.0 + HORIZON_DAYS * 86400.0)
+def make_sim(sc: Scenario, seed: int = 0, horizon_s: float = None) -> Simulation:
+    t0 = sc.start_hour * 3600.0
+    sim = Simulation(sc.building, sc.profile, sc.car, seed=seed, t_start=t0,
+                     n_cars=sc.n_cars, patience=sc.patience,
+                     dispatcher=sc.dispatcher)
+    sim.start_stream(t0 + (horizon_s or HORIZON_DAYS * 86400.0))
     return sim
+
+
+def total_energy_j(sim: Simulation, sc: Scenario) -> float:
+    elapsed = sim.engine.now - sc.start_hour * 3600.0
+    standby = sc.car.standby_w * len(sim.cars) * elapsed
+    return sim.metrics.energy_j + standby
+
+
+def build_report(sim: Simulation, sc: Scenario) -> dict:
+    """Итоговый отчёт прогона: метрики, тепловая карта, энергия, вердикты."""
+    t0 = sc.start_hour * 3600.0
+    s = sim.metrics.summary()
+    n = max(1, len(sim.metrics.completed))
+    share_over_90 = sum(1 for p in sim.metrics.completed
+                        if p.waiting_time() > 90.0) / n
+    energy_kwh = total_energy_j(sim, sc) / 3.6e6
+    hours = max(1e-9, (sim.engine.now - t0) / 3600.0)
+    verdicts = {
+        "awt_le_40": ("Среднее ожидание ≤ 40 с (ISO 8100-32, жилое)",
+                      s.get("awt", 0) <= 40.0 if s.get("passengers") else None),
+        "share90_le_10": ("Ожиданий дольше 90 с — не более 10% (CIBSE)",
+                          share_over_90 <= 0.10 if s.get("passengers") else None),
+        "no_abandoned": ("Никто не ушёл, не дождавшись лифта",
+                         len(sim.metrics.abandoned) == 0),
+    }
+    return {
+        "scenario": sc.name,
+        "sim_hours": round(hours, 2),
+        "summary": s,
+        "share_over_90": round(share_over_90, 4),
+        "heatmap": sim.metrics.heatmap(sim.building.floors),
+        "hourly_awt": sim.metrics.hourly_awt(),
+        "energy_kwh": round(energy_kwh, 3),
+        "energy_kwh_per_day": round(energy_kwh / hours * 24.0, 2),
+        "trips": len(sim.metrics.departures),
+        "verdicts": verdicts,
+    }
 
 
 STATE_CODE = {"idle": 0, "moving": 1, "doors_opening": 2,
@@ -54,7 +93,10 @@ class SimRunner(threading.Thread):
         super().__init__(daemon=True)
         self.lock = threading.Lock()
         self.scenario_file = scenario_file
-        self.scenario = load_scenario(SCENARIOS / scenario_file)
+        self.scenario_raw = json.loads(
+            (SCENARIOS / scenario_file).read_text(encoding="utf-8"))
+        self.scenario = scenario_from_dict(self.scenario_raw,
+                                           Path(scenario_file).stem)
         self.sim = make_sim(self.scenario)
         self.speed = speed
         self.paused = False
@@ -103,8 +145,16 @@ class SimRunner(threading.Thread):
                 self.paused = bool(cmd["paused"])
             if "scenario" in cmd:
                 file = Path(str(cmd["scenario"])).name  # без выхода из каталога
-                self.scenario = load_scenario(SCENARIOS / file)
+                raw = json.loads((SCENARIOS / file).read_text(encoding="utf-8"))
+                self.scenario = scenario_from_dict(raw, Path(file).stem)
+                self.scenario_raw = raw
                 self.scenario_file = file
+                cmd["reset"] = True
+            if "params" in cmd:
+                raw = dict(cmd["params"])
+                self.scenario = scenario_from_dict(raw)  # валидация до применения
+                self.scenario_raw = raw
+                self.scenario_file = "(настроено вручную)"
                 cmd["reset"] = True
             if "car_oos" in cmd:
                 idx, val = cmd["car_oos"]
@@ -135,6 +185,7 @@ class SimRunner(threading.Thread):
                 "acceleration": car.p.acceleration,
                 "jerk": car.p.jerk,
                 "peak_percent": sim.profile.peak_percent,
+                "dispatcher": self.scenario.dispatcher,
             },
             "t": t,
             "clock": f"{int(day_s // 3600):02d}:{int(day_s % 3600 // 60):02d}:{int(day_s % 60):02d}",
@@ -154,7 +205,8 @@ class SimRunner(threading.Thread):
                 "delivered": len(sim.metrics.completed),
                 "waiting": ctrl.total_waiting(),
                 "abandoned": len(sim.metrics.abandoned),
-                "energy_kwh": round(self._total_energy_j() / 3.6e6, 3),
+                "energy_kwh": round(
+                    total_energy_j(sim, self.scenario) / 3.6e6, 3),
             },
             "hist_range": [self.history[0]["t"], self.history[-1]["t"]]
             if self.history else None,
@@ -182,11 +234,6 @@ class SimRunner(threading.Thread):
             "calls": sorted(c.car_calls),
             "oos": c.out_of_service,
         }
-
-    def _total_energy_j(self) -> float:
-        elapsed = self.sim.engine.now - self.scenario.start_hour * 3600.0
-        standby = self.scenario.car.standby_w * len(self.sim.cars) * elapsed
-        return self.sim.metrics.energy_j + standby
 
     # --- история, траектория, отчёт -------------------------------------------
 
@@ -217,36 +264,7 @@ class SimRunner(threading.Thread):
 
     def report(self) -> dict:
         with self.lock:
-            sim = self.sim
-            t0 = self.scenario.start_hour * 3600.0
-            t = sim.engine.now
-            s = sim.metrics.summary()
-            waits_over_90 = sum(1 for p in sim.metrics.completed
-                                if p.waiting_time() > 90.0)
-            n = max(1, len(sim.metrics.completed))
-            share_over_90 = waits_over_90 / n
-            energy_kwh = self._total_energy_j() / 3.6e6
-            hours = max(1e-9, (t - t0) / 3600.0)
-            verdicts = {
-                "awt_le_40": ("Среднее ожидание ≤ 40 с (ISO 8100-32, жилое)",
-                              s.get("awt", 0) <= 40.0 if s.get("passengers") else None),
-                "share90_le_10": ("Ожиданий дольше 90 с — не более 10% (CIBSE)",
-                                  share_over_90 <= 0.10 if s.get("passengers") else None),
-                "no_abandoned": ("Никто не ушёл, не дождавшись лифта",
-                                 len(sim.metrics.abandoned) == 0),
-            }
-            return {
-                "scenario": self.scenario.name,
-                "sim_hours": round(hours, 2),
-                "summary": s,
-                "share_over_90": round(share_over_90, 4),
-                "heatmap": sim.metrics.heatmap(sim.building.floors),
-                "hourly_awt": sim.metrics.hourly_awt(),
-                "energy_kwh": round(energy_kwh, 3),
-                "energy_kwh_per_day": round(energy_kwh / hours * 24.0, 2),
-                "trips": len(sim.metrics.departures),
-                "verdicts": verdicts,
-            }
+            return build_report(self.sim, self.scenario)
 
     def _wait_histogram(self, bin_s: float = 10.0, n_bins: int = 12) -> dict:
         """Гистограмма ожиданий по корзинам bin_s секунд; последняя — переполнение."""
@@ -268,7 +286,79 @@ class SimRunner(threading.Thread):
         return "\n".join(rows) + "\n"
 
 
+class BackgroundRuns:
+    """Фоновые прогоны на полной скорости: запуск, прогресс, отчёты на диске."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.jobs: dict = {}  # rid -> {name, status, progress, error}
+
+    def start(self, raw: dict, name: str, hours: float, seed: int = 1) -> str:
+        scenario_from_dict(dict(raw))  # валидация до старта потока
+        rid = time.strftime("%Y%m%d-%H%M%S") + f"-{len(self.jobs)}"
+        with self.lock:
+            self.jobs[rid] = {"name": name, "status": "running", "progress": 0.0}
+        threading.Thread(target=self._work, daemon=True,
+                         args=(rid, dict(raw), name, hours, seed)).start()
+        return rid
+
+    def _work(self, rid: str, raw: dict, name: str, hours: float, seed: int) -> None:
+        job = self.jobs[rid]
+        try:
+            sc = scenario_from_dict(raw, name)
+            t0 = sc.start_hour * 3600.0
+            t_end = t0 + hours * 3600.0
+            sim = make_sim(sc, seed=seed, horizon_s=hours * 3600.0)
+            step = (t_end - t0) / 200.0
+            t = t0
+            while t < t_end:
+                t = min(t_end, t + step)
+                sim.step_until(t)
+                job["progress"] = (t - t0) / (t_end - t0)
+            RUNS_DIR.mkdir(exist_ok=True)
+            payload = {
+                "meta": {"rid": rid, "name": name, "hours": hours,
+                         "scenario": sc.name, "seed": seed,
+                         "finished": time.strftime("%Y-%m-%d %H:%M:%S")},
+                "scenario_raw": raw,
+                "report": build_report(sim, sc),
+            }
+            (RUNS_DIR / f"{rid}.json").write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            job["status"] = "done"
+        except Exception as e:  # отчёт об ошибке вместо тихой смерти потока
+            job["status"] = "error"
+            job["error"] = str(e)
+
+    def list(self) -> list:
+        out = []
+        with self.lock:
+            running = {rid: dict(j) for rid, j in self.jobs.items()
+                       if j["status"] != "done"}
+        for rid, j in running.items():
+            out.append({"rid": rid, **j})
+        if RUNS_DIR.is_dir():
+            for p in sorted(RUNS_DIR.glob("*.json"), reverse=True):
+                try:
+                    meta = json.loads(p.read_text(encoding="utf-8"))["meta"]
+                    out.append({"rid": p.stem, "status": "done",
+                                "progress": 1.0, **meta})
+                except (ValueError, KeyError):
+                    continue
+        return out
+
+    def get(self, rid: str) -> dict:
+        p = RUNS_DIR / (Path(rid).name + ".json")
+        return json.loads(p.read_text(encoding="utf-8"))
+
+    def delete(self, rid: str) -> None:
+        (RUNS_DIR / (Path(rid).name + ".json")).unlink(missing_ok=True)
+        with self.lock:
+            self.jobs.pop(rid, None)
+
+
 RUNNER: SimRunner = None
+RUNS = BackgroundRuns()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -295,6 +385,21 @@ class Handler(BaseHTTPRequestHandler):
             return
         if url.path == "/report":
             self._send_json(RUNNER.report())
+            return
+        if url.path == "/params":
+            with RUNNER.lock:
+                self._send_json({"file": RUNNER.scenario_file,
+                                 "raw": RUNNER.scenario_raw})
+            return
+        if url.path == "/runs":
+            self._send_json(RUNS.list())
+            return
+        if url.path == "/runs/get":
+            rid = parse_qs(url.query).get("rid", [""])[0]
+            try:
+                self._send_json(RUNS.get(rid))
+            except OSError:
+                self.send_error(404)
             return
         if self.path in ("/", "/index.html"):
             body = (STATIC / "index.html").read_bytes()
@@ -337,22 +442,38 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self) -> None:
-        if self.path == "/control":
-            length = int(self.headers.get("Content-Length", 0))
+        length = int(self.headers.get("Content-Length", 0))
+        try:
             cmd = json.loads(self.rfile.read(length) or b"{}")
-            try:
+            if self.path == "/control":
                 RUNNER.control(cmd)
-            except (ValueError, OSError, json.JSONDecodeError) as e:
-                body = str(e).encode()
-                self.send_response(400)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+            elif self.path == "/scenarios/save":
+                name = Path(str(cmd["file"])).name
+                if not name.endswith(".json"):
+                    name += ".json"
+                scenario_from_dict(dict(cmd["data"]))  # валидация до записи
+                (SCENARIOS / name).write_text(
+                    json.dumps(cmd["data"], ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+            elif self.path == "/runs/start":
+                raw = cmd.get("params") or RUNNER.scenario_raw
+                RUNS.start(raw, str(cmd.get("name") or "прогон"),
+                           max(0.1, min(168.0, float(cmd.get("hours", 24)))),
+                           seed=int(cmd.get("seed", 1)))
+            elif self.path == "/runs/delete":
+                RUNS.delete(str(cmd["rid"]))
+            else:
+                self.send_error(404)
                 return
-            self.send_response(204)
+        except (ValueError, KeyError, OSError, json.JSONDecodeError) as e:
+            body = str(e).encode()
+            self.send_response(400)
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-        else:
-            self.send_error(404)
+            self.wfile.write(body)
+            return
+        self.send_response(204)
+        self.end_headers()
 
 
 def main() -> None:

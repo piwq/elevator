@@ -71,6 +71,7 @@
     </div>
     <div class="row">
       <select id="scenario"></select>
+      <button id="params-btn">⚙ параметры</button>
       <button id="report-btn">📋 отчёт</button>
     </div>
   </div>
@@ -108,6 +109,21 @@
       <div class="kpi" id="k-energy"><div class="v">–</div><div class="l">энергия, кВт·ч</div></div>
     </div>
     <div style="margin-top:8px"><a class="btn" href="/passengers.csv" download>⬇ выгрузить историю пассажиров (CSV)</a></div>
+  </div>
+  <div class="card">
+    <h2>Фоновые прогоны (полные сутки за секунды)</h2>
+    <div class="row">
+      <input id="run-name" placeholder="название" style="background:var(--bg);color:var(--fg);
+        border:1px solid var(--line);border-radius:7px;padding:6px 10px;font:inherit;width:160px">
+      <input id="run-hours" type="number" value="24" min="1" max="168" style="background:var(--bg);
+        color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:6px 10px;font:inherit;width:70px">
+      <span class="sub">часов</span>
+      <button id="run-start">▶ запустить с текущими параметрами</button>
+    </div>
+    <table id="runs-table" style="margin-top:8px">
+      <thead><tr><th>прогон</th><th>статус</th><th></th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
   </div>
   <div class="card">
     <h2>Траектории кабин за прогон</h2>
@@ -367,7 +383,8 @@ function drawPanel() {
     document.getElementById("subtitle").textContent =
       `${S.floors} уровней · население ${S.scenario.population} чел · ` +
       `${S.cars.length} лифт(а) × ${S.cars[0].capacity} чел · v ${S.scenario.rated_speed} м/с · ` +
-      `a ${S.scenario.acceleration} · jerk ${S.scenario.jerk} · пик ${S.scenario.peak_percent}%/5 мин`;
+      `a ${S.scenario.acceleration} · jerk ${S.scenario.jerk} · пик ${S.scenario.peak_percent}%/5 мин · ` +
+      `диспетчер: ${S.scenario.dispatcher === "eta" ? "ETA" : "Nearest Car"}`;
     if (scenarioSel.value !== S.scenario.file && scenarioSel.options.length)
       scenarioSel.value = S.scenario.file;
   }
@@ -581,9 +598,158 @@ async function refreshHeatmap() {
 setInterval(refreshHeatmap, 10000);
 setTimeout(() => { refreshTrajectory(); refreshHeatmap(); }, 1500);
 
+// --- редактор параметров ---------------------------------------------------------------
+const PARAM_FIELDS = [
+  ["Здание", "building", "floors", "этажей (вкл. холл)"],
+  ["Здание", "building", "floor_height", "высота этажа, м"],
+  ["Здание", "building", "apartments_per_floor", "квартир на этаж"],
+  ["Здание", "building", "persons_per_apartment", "человек на квартиру"],
+  ["Лифты", null, "cars", "число кабин (1-8)"],
+  ["Лифты", "car", "rated_speed", "скорость, м/с"],
+  ["Лифты", "car", "acceleration", "ускорение, м/с²"],
+  ["Лифты", "car", "jerk", "рывок, м/с³"],
+  ["Лифты", "car", "capacity", "вместимость, чел"],
+  ["Лифты", "car", "door_open", "открытие дверей, с"],
+  ["Лифты", "car", "door_close", "закрытие дверей, с"],
+  ["Лифты", "car", "dwell_hall", "выдержка по вызову, с"],
+  ["Лифты", "car", "dwell_car", "выдержка по приказу, с"],
+  ["Лифты", "car", "transfer_time", "вход/выход, с на чел"],
+  ["Лифты", "car", "home_timeout", "простой до парковки, с"],
+  ["Спрос", "demand", "peak_percent", "пик, % населения / 5 мин"],
+  ["Спрос", "demand", "mean_batch", "средний размер группы"],
+  ["Спрос", "demand", "patience_s", "терпение, с (0 — ждут вечно)"],
+  ["Спрос", "web", "start_hour", "час старта симуляции"],
+];
+document.getElementById("params-btn").onclick = async () => {
+  const p = await (await fetch("/params")).json();
+  const raw = p.raw || {};
+  const get = (sec, key) => sec ? (raw[sec] || {})[key] : raw[key];
+  let html = `<div class="row" style="justify-content:space-between">
+    <h1>Параметры симуляции</h1>
+    <button onclick="document.getElementById('overlay').style.display='none'">✕ закрыть</button></div>
+    <div class="sub">пустое поле — значение по умолчанию; применение перезапускает прогон</div>
+    <div class="row" style="margin:10px 0">
+      <span class="sub">название</span>
+      <input id="pf-name" value="${(raw.name || "").replace(/"/g, "&quot;")}"
+        style="background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:6px 10px;font:inherit;flex:1">
+      <span class="sub">диспетчер</span>
+      <select id="pf-dispatcher">
+        <option value="nearest_car">Nearest Car (классика)</option>
+        <option value="eta" ${get(null, "dispatcher") === "eta" ? "selected" : ""}>ETA (мин. время прибытия)</option>
+      </select>
+    </div>`;
+  let lastGroup = "";
+  html += `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(190px,1fr))">`;
+  for (const [group, sec, key, label] of PARAM_FIELDS) {
+    if (group !== lastGroup) { html += `</div><h2 style="margin-top:10px">${group}</h2><div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(190px,1fr))">`; lastGroup = group; }
+    const v = get(sec, key);
+    html += `<label class="kpi"><input data-sec="${sec || ""}" data-key="${key}" value="${v === undefined ? "" : v}"
+      style="background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;
+      padding:4px 8px;font:inherit;width:100%"><div class="l">${label}</div></label>`;
+  }
+  html += `</div>
+    <h2 style="margin-top:10px">Суточный профиль (JSON, опционально)</h2>
+    <textarea id="pf-day" rows="6" style="width:100%;background:var(--bg);color:var(--fg);
+      border:1px solid var(--line);border-radius:7px;font:12px/1.4 monospace;padding:8px"
+      placeholder='[{"from_hour":6,"intensity":1.0,"in":0.15,"out":0.75,"interfloor":0.10}, ...]'>${raw.demand && raw.demand.day_profile ? JSON.stringify(raw.demand.day_profile, null, 1) : ""}</textarea>
+    <h2 style="margin-top:10px">Население по этажам (JSON-массив, опционально)</h2>
+    <textarea id="pf-pop" rows="2" style="width:100%;background:var(--bg);color:var(--fg);
+      border:1px solid var(--line);border-radius:7px;font:12px/1.4 monospace;padding:8px"
+      placeholder="[0, 10, 10, 12, ...] — длина = этажности">${raw.building && raw.building.population_per_floor ? JSON.stringify(raw.building.population_per_floor) : ""}</textarea>
+    <div class="row" style="margin-top:12px">
+      <button class="on" id="pf-apply">✔ применить (перезапуск)</button>
+      <input id="pf-file" placeholder="имя файла.json" style="background:var(--bg);color:var(--fg);
+        border:1px solid var(--line);border-radius:7px;padding:6px 10px;font:inherit;width:170px">
+      <button id="pf-save">💾 сохранить как сценарий</button>
+      <span class="sub" id="pf-msg"></span>
+    </div>`;
+  document.getElementById("report-card").innerHTML = html;
+  document.getElementById("overlay").style.display = "flex";
+  const collect = () => {
+    const out = { name: document.getElementById("pf-name").value || "Своя конфигурация" };
+    out.dispatcher = document.getElementById("pf-dispatcher").value;
+    document.querySelectorAll("#report-card input[data-key]").forEach(inp => {
+      const v = inp.value.trim();
+      if (v === "") return;
+      const num = +v.replace(",", ".");
+      if (Number.isNaN(num)) throw new Error(`«${inp.dataset.key}»: не число`);
+      const sec = inp.dataset.sec;
+      if (sec) { out[sec] = out[sec] || {}; out[sec][inp.dataset.key] = num; }
+      else out[inp.dataset.key] = num;
+    });
+    const day = document.getElementById("pf-day").value.trim();
+    if (day) { out.demand = out.demand || {}; out.demand.day_profile = JSON.parse(day); }
+    const pop = document.getElementById("pf-pop").value.trim();
+    if (pop) { out.building = out.building || {}; out.building.population_per_floor = JSON.parse(pop); }
+    if (out.web && out.web.start_hour !== undefined) out.web = { start_hour: out.web.start_hour };
+    return out;
+  };
+  const msg = (t, bad) => { const el = document.getElementById("pf-msg");
+    el.textContent = t; el.style.color = bad ? "var(--warn)" : "var(--up)"; };
+  document.getElementById("pf-apply").onclick = async () => {
+    try {
+      const r = await post({ params: collect() });
+      if (!r.ok) { msg(await r.text(), true); return; }
+      goLive(); document.getElementById("overlay").style.display = "none";
+    } catch (e) { msg(e.message, true); }
+  };
+  document.getElementById("pf-save").onclick = async () => {
+    try {
+      const file = document.getElementById("pf-file").value.trim();
+      if (!file) { msg("укажи имя файла", true); return; }
+      const r = await fetch("/scenarios/save", { method: "POST",
+        body: JSON.stringify({ file, data: collect() }) });
+      if (!r.ok) { msg(await r.text(), true); return; }
+      msg("сохранено: scenarios/" + file);
+      scenarioSel.innerHTML = "";
+      const list = await (await fetch("/scenarios")).json();
+      list.forEach(s => { const o = document.createElement("option");
+        o.value = s.file; o.textContent = s.name; scenarioSel.appendChild(o); });
+    } catch (e) { msg(e.message, true); }
+  };
+};
+
+// --- фоновые прогоны ----------------------------------------------------------------
+document.getElementById("run-start").onclick = async () => {
+  const name = document.getElementById("run-name").value.trim() ||
+    (S && S.scenario ? S.scenario.name : "прогон");
+  const hours = +document.getElementById("run-hours").value || 24;
+  await fetch("/runs/start", { method: "POST", body: JSON.stringify({ name, hours }) });
+  refreshRuns();
+};
+async function refreshRuns() {
+  try {
+    const runs = await (await fetch("/runs")).json();
+    const tb = document.querySelector("#runs-table tbody");
+    tb.innerHTML = runs.map(r => {
+      const st = r.status === "running"
+        ? `выполняется ${(r.progress * 100).toFixed(0)}%`
+        : r.status === "error" ? `<span class="verdict-bad">ошибка: ${r.error}</span>`
+        : `готов · ${r.finished || ""}`;
+      const open = r.status === "done"
+        ? `<a class="btn" href="#" onclick="openRun('${r.rid}');return false">отчёт</a>` : "";
+      return `<tr><td>${r.name}${r.hours ? ` (${r.hours} ч)` : ""}</td><td>${st}</td>
+        <td>${open}</td><td><a class="btn" href="#" onclick="deleteRun('${r.rid}');return false">✕</a></td></tr>`;
+    }).join("");
+  } catch (e) { /* ignore */ }
+}
+setInterval(refreshRuns, 3000);
+refreshRuns();
+window.openRun = async (rid) => {
+  const data = await (await fetch(`/runs/get?rid=${rid}`)).json();
+  renderReport(data.report, `${data.meta.name} — ${data.meta.finished}`);
+};
+window.deleteRun = async (rid) => {
+  await fetch("/runs/delete", { method: "POST", body: JSON.stringify({ rid }) });
+  refreshRuns();
+};
+
 // --- отчёт ---------------------------------------------------------------------------
 document.getElementById("report-btn").onclick = async () => {
   const r = await (await fetch("/report")).json();
+  renderReport(r, null);
+};
+function renderReport(r, subtitle) {
   const s = r.summary, v = r.verdicts;
   const vrow = (key) => {
     const [label, ok] = v[key];
@@ -600,6 +766,7 @@ document.getElementById("report-btn").onclick = async () => {
       <h1>Отчёт за прогон — ${r.scenario}</h1>
       <button onclick="document.getElementById('overlay').style.display='none'">✕ закрыть</button>
     </div>
+    ${subtitle ? `<div class="sub">${subtitle}</div>` : ""}
     <div class="sub">${r.sim_hours} ч модельного времени · ${r.trips} рейсов · ${s.passengers || 0} пассажиров</div>
     <h2 style="margin-top:12px">Вердикты</h2>
     <table>${vrow("awt_le_40")}${vrow("share90_le_10")}${vrow("no_abandoned")}</table>

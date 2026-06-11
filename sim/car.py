@@ -203,7 +203,7 @@ class Car:
     # --- парковка (home landing) -------------------------------------------
 
     def _arm_home_timer(self) -> None:
-        if self.floor != self.p.home_floor:
+        if self.floor != self.controller.park_floor(self):
             self._home_event = self.engine.schedule(self.p.home_timeout, self._go_home)
 
     def _cancel_home_timer(self) -> None:
@@ -213,4 +213,6 @@ class Car:
 
     def _go_home(self) -> None:
         if self.state == CarState.IDLE and self.controller.next_target(self) is None:
-            self._depart(self.p.home_floor)
+            target = self.controller.park_floor(self)
+            if target != self.floor:
+                self._depart(target)

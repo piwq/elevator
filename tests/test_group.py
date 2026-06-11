@@ -97,3 +97,36 @@ def test_heatmap_and_hourly():
     assert populated_hours and populated_hours <= {0, 1, 2}
     hourly = sim.metrics.hourly_awt()
     assert hourly[0][1] > 0  # в первый час кто-то уехал
+
+
+def test_eta_dispatcher_works_and_competitive():
+    """ETA-диспетчер развозит всех; ожидание сопоставимо с Nearest Car."""
+    b = Building(floors=17)
+    prof = constant_profile(8.0, 0.45, 0.45, 0.10)
+    awts = {}
+    for disp in ("nearest_car", "eta"):
+        sim = Simulation(b, prof, CarParams(), seed=21, n_cars=2,
+                         dispatcher=disp)
+        sim.run(2 * 3600.0)
+        assert sim.controller.total_waiting() == 0
+        awts[disp] = sim.metrics.summary(900.0)["awt"]
+    # не хуже чем в полтора раза (эвристика не обязана выигрывать всегда)
+    assert awts["eta"] < awts["nearest_car"] * 1.5, awts
+
+
+def test_idle_cars_park_distributed():
+    """Свободные кабины: одна в холле, вторая — в центре тяжести населения."""
+    b = Building(floors=17)
+    prof = constant_profile(0.001, 0.5, 0.5, 0.0)  # почти нет спроса
+    sim = Simulation(b, prof, CarParams(), seed=1, n_cars=2)
+    from sim.passengers import Passenger
+    sim.start_stream(1e12)
+    # разово развести кабины с холла: пассажир на 9-й, потом тишина
+    sim.controller.add_passengers([Passenger(0, 0, 9, sim.engine.now)])
+    sim.step_until(sim.engine.now + 1200.0)
+    floors = sorted(c.floor for c in sim.cars)
+    centroid = round(sum(f * p for f, p in enumerate(b.population))
+                     / sum(b.population[1:]))
+    assert floors[0] == 0, floors
+    assert floors[1] in (centroid - 1, centroid, centroid + 1), \
+        (floors, centroid)

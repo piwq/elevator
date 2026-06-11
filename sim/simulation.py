@@ -7,7 +7,7 @@ import random
 from .building import Building
 from .car import Car
 from .config import CarParams
-from .controller import SelectiveCollective
+from .controller import DISPATCHERS
 from .engine import Engine
 from .metrics import Metrics
 from .passengers import PassengerGenerator
@@ -18,12 +18,13 @@ class Simulation:
     def __init__(self, building: Building, profile: DemandProfile,
                  car_params: CarParams | None = None, seed: int = 0,
                  t_start: float = 0.0, n_cars: int = 1,
-                 patience: float = 0.0) -> None:
+                 patience: float = 0.0, dispatcher: str = "nearest_car") -> None:
         self.building = building
         self.profile = profile
         self.engine = Engine(start=t_start)
         self.metrics = Metrics()
-        self.controller = SelectiveCollective(building.floors, patience=patience)
+        self.controller = DISPATCHERS[dispatcher](building.floors,
+                                                  patience=patience)
         params = car_params or CarParams()
         self.cars = [Car(self.engine, building, params, self.controller,
                          self.metrics, idx=i) for i in range(n_cars)]
