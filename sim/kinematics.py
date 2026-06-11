@@ -68,8 +68,10 @@ class Profile:
         return Profile(origin, sign, v_pk, a_pk, j, phases, total)
 
     def state(self, t: float) -> tuple:
-        """(позиция, скорость) в момент t от начала поездки."""
-        t = max(0.0, min(t, self.total))
+        """(позиция, скорость, ускорение) в момент t от начала поездки."""
+        clamped = max(0.0, min(t, self.total))
+        at_end = t >= self.total
+        t = clamped
         j_signs = (1, 0, -1, 0, -1, 0, 1)
         x, u, acc = 0.0, 0.0, 0.0
         for dur, js in zip(self.t_phase, j_signs):
@@ -81,7 +83,9 @@ class Profile:
             t -= dt
             if t <= 0:
                 break
-        return self.origin + self.sign * x, self.sign * u
+        if at_end:
+            u, acc = 0.0, 0.0  # подавить остаточную ошибку округления фаз
+        return self.origin + self.sign * x, self.sign * u, self.sign * acc
 
     def decel_start_time(self) -> float:
         """Момент начала торможения (старт фазы 5) от начала поездки."""

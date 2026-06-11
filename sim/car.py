@@ -49,9 +49,13 @@ class Car:
     # --- наблюдение состояния (для веба/метрик) -------------------------
 
     def position(self, t: float) -> float:
+        return self.kinematics_at(t)[0]
+
+    def kinematics_at(self, t: float) -> tuple:
+        """(позиция м, скорость м/с, ускорение м/с²) в произвольный момент t."""
         if self.state == CarState.MOVING and self.profile is not None:
-            return self.profile.state(t - self.t_depart)[0]
-        return self.building.height_of(self.floor)
+            return self.profile.state(t - self.t_depart)
+        return self.building.height_of(self.floor), 0.0, 0.0
 
     def load(self) -> int:
         return len(self.riders)

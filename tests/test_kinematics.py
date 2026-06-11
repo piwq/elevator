@@ -42,18 +42,23 @@ def test_profile_state_consistent(d):
     """Интегрирование по фазам сходится с замкнутой формулой расстояния."""
     p = Profile.plan(0.0, d, V, A, J)
     assert p.total == pytest.approx(trip_time(d, V, A, J), rel=1e-9)
-    x_end, v_end = p.state(p.total)
+    x_end, v_end, a_end = p.state(p.total)
     assert x_end == pytest.approx(d, abs=1e-6)
-    assert v_end == pytest.approx(0.0, abs=1e-6)
+    assert v_end == 0.0 and a_end == 0.0
     # пиковая скорость достигается к началу торможения и не превышает номинал
-    x_mid, v_mid = p.state(p.decel_start_time())
+    x_mid, v_mid, _ = p.state(p.decel_start_time())
     assert v_mid == pytest.approx(p.v_pk, abs=1e-6)
     assert p.v_pk <= V + 1e-9
+    # ускорение нигде не превышает пиковое, скорость — пиковую
+    for k in range(101):
+        _, v, a = p.state(p.total * k / 100)
+        assert abs(a) <= p.a_pk + 1e-9
+        assert abs(v) <= p.v_pk + 1e-9
 
 
 def test_downward_profile_symmetric():
     p = Profile.plan(21.0, 3.0, V, A, J)
-    x_half, v_half = p.state(p.total / 2)
+    x_half, v_half, _ = p.state(p.total / 2)
     assert 3.0 <= x_half <= 21.0
     assert v_half < 0  # движение вниз
     assert p.state(p.total)[0] == pytest.approx(3.0, abs=1e-6)

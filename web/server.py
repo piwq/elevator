@@ -88,7 +88,9 @@ class SimRunner(threading.Thread):
         car, ctrl = sim.car, sim.controller
         if t - self._summary_at > 2.0 * self.speed:  # пересчёт метрик ~раз в 2 c
             self._last_summary = sim.metrics.summary()
+            self._last_summary["wait_hist"] = self._wait_histogram()
             self._summary_at = t
+        y, v, acc = car.kinematics_at(t)
         mix = sim.profile.mix(t)
         pop = sim.building.total_population
         rate_5min = sim.profile.passenger_rate(t, pop) * 300.0
@@ -110,7 +112,9 @@ class SimRunner(threading.Thread):
             "floors": sim.building.floors,
             "floor_height": sim.building.floor_height,
             "car": {
-                "y": car.position(t),
+                "y": y,
+                "v": round(v, 3),
+                "a": round(acc, 3),
                 "state": car.state.value,
                 "load": car.load(),
                 "capacity": car.p.capacity,
@@ -131,7 +135,37 @@ class SimRunner(threading.Thread):
                 "waiting": ctrl.total_waiting(),
             },
             "metrics": self._last_summary,
+            "recent": [
+                {
+                    "pid": p.pid,
+                    "from": p.origin,
+                    "to": p.destination,
+                    "wait": round(p.waiting_time(), 1),
+                    "transit": round(p.transit_time(), 1),
+                    "ttd": round(p.time_to_destination(), 1),
+                }
+                for p in sim.metrics.completed[-12:][::-1]
+            ],
         }
+
+    def _wait_histogram(self, bin_s: float = 10.0, n_bins: int = 12) -> dict:
+        """Гистограмма ожиданий по корзинам bin_s секунд; последняя — переполнение."""
+        bins = [0] * (n_bins + 1)
+        for p in self.sim.metrics.completed:
+            k = min(int(p.waiting_time() // bin_s), n_bins)
+            bins[k] += 1
+        return {"bin_s": bin_s, "bins": bins}
+
+    def passengers_csv(self) -> str:
+        rows = ["pid,origin,destination,t_created,t_board,t_alight,wait_s,transit_s,ttd_s"]
+        with self.lock:
+            completed = list(self.sim.metrics.completed)
+        for p in completed:
+            rows.append(f"{p.pid},{p.origin},{p.destination},"
+                        f"{p.t_created:.2f},{p.t_board:.2f},{p.t_alight:.2f},"
+                        f"{p.waiting_time():.2f},{p.transit_time():.2f},"
+                        f"{p.time_to_destination():.2f}")
+        return "\n".join(rows) + "\n"
 
 
 RUNNER: SimRunner = None
@@ -146,6 +180,15 @@ class Handler(BaseHTTPRequestHandler):
             body = (STATIC / "index.html").read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == "/passengers.csv":
+            body = RUNNER.passengers_csv().encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition",
+                             "attachment; filename=passengers.csv")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

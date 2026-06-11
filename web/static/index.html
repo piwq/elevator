@@ -31,6 +31,12 @@
   .bar { height:8px; border-radius:4px; background:var(--bg); overflow:hidden;
          display:flex; margin-top:6px; }
   .bar i { display:block; height:100%; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  th, td { text-align:right; padding:3px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:500; font-size:11px; }
+  td:first-child, th:first-child { text-align:left; }
+  a.btn { color:var(--accent); text-decoration:none; font-size:12px; }
+  .telem-label { font-size:11px; color:var(--dim); margin:6px 0 2px; }
 </style>
 </head>
 <body>
@@ -78,6 +84,32 @@
       <div class="kpi" id="k-delivered"><div class="v">–</div><div class="l">доставлено</div></div>
       <div class="kpi" id="k-waiting"><div class="v">–</div><div class="l">ждут сейчас</div></div>
     </div>
+    <div style="margin-top:8px"><a class="btn" href="/passengers.csv" download>⬇ выгрузить историю пассажиров (CSV)</a></div>
+  </div>
+  <div class="card">
+    <h2>Телеметрия кабины (аналитическая S-кривая в каждый момент)</h2>
+    <div class="grid" style="margin-bottom:6px">
+      <div class="kpi" id="k-y"><div class="v">–</div><div class="l">высота, м</div></div>
+      <div class="kpi" id="k-v"><div class="v">–</div><div class="l">скорость, м/с</div></div>
+      <div class="kpi" id="k-a"><div class="v">–</div><div class="l">ускорение, м/с²</div></div>
+    </div>
+    <div class="telem-label">положение x(t), м</div>
+    <canvas id="ty" width="640" height="70"></canvas>
+    <div class="telem-label">скорость v(t), м/с</div>
+    <canvas id="tv" width="640" height="70"></canvas>
+    <div class="telem-label">ускорение a(t), м/с²</div>
+    <canvas id="ta" width="640" height="70"></canvas>
+  </div>
+  <div class="card">
+    <h2>Распределение времени ожидания</h2>
+    <canvas id="hist" width="640" height="110"></canvas>
+  </div>
+  <div class="card">
+    <h2>Последние пассажиры</h2>
+    <table id="recent">
+      <thead><tr><th>маршрут</th><th>ожидание, c</th><th>в кабине, c</th><th>всего, c</th></tr></thead>
+      <tbody></tbody>
+    </table>
   </div>
   <div class="card">
     <h2>История ожидания (AWT, скользящее окно прогона)</h2>
@@ -89,18 +121,22 @@
 const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
 const chart = document.getElementById("chart"), cctx = chart.getContext("2d");
 let S = null, prev = null, prevAt = 0, lastAt = 0;
-const awtHistory = [];
+const awtHistory = [], telem = [];
 
 const es = new EventSource("/events");
 es.onmessage = (e) => {
   const snap = JSON.parse(e.data);
   if (!snap.car) return;
+  if (S && snap.t < S.t) { awtHistory.length = 0; telem.length = 0; } // reset/сценарий
   prev = S; prevAt = lastAt; S = snap; lastAt = performance.now();
   if (S.metrics && S.metrics.awt !== undefined) {
     const last = awtHistory[awtHistory.length - 1];
     if (!last || last.t !== S.t) awtHistory.push({ t: S.t, awt: S.metrics.awt });
     if (awtHistory.length > 600) awtHistory.shift();
   }
+  const lt = telem[telem.length - 1];
+  if (!lt || lt.t !== S.t) telem.push({ t: S.t, y: S.car.y, v: S.car.v, a: S.car.a });
+  if (telem.length > 900) telem.shift();
 };
 
 function post(body) { fetch("/control", { method: "POST", body: JSON.stringify(body) }); }
@@ -211,7 +247,60 @@ function draw() {
   setKpi("k-created", S.totals.created, 0, false);
   setKpi("k-delivered", S.totals.delivered, 0, false);
   setKpi("k-waiting", S.totals.waiting, 0, S.totals.waiting > 16);
+  setKpi("k-y", S.car.y, 1, false);
+  setKpi("k-v", S.car.v, 2, false);
+  setKpi("k-a", S.car.a, 2, false);
+  drawTelem("ty", "y", "#4ea1ff", 0, S.floors * S.floor_height);
+  const vmax = S.scenario ? S.scenario.rated_speed * 1.15 : 2;
+  drawTelem("tv", "v", "#39c46f", -vmax, vmax, true);
+  const amax = S.scenario ? S.scenario.acceleration * 1.25 : 1.5;
+  drawTelem("ta", "a", "#ff9e3d", -amax, amax, true);
+  drawHist();
+  drawRecent();
   drawChart();
+}
+function drawTelem(id, key, color, yMin, yMax, zeroLine) {
+  const c = document.getElementById(id), g = c.getContext("2d");
+  g.clearRect(0, 0, c.width, c.height);
+  if (telem.length < 2) return;
+  const t0 = telem[0].t, t1 = telem[telem.length - 1].t;
+  const X = t => 2 + (t - t0) / Math.max(1e-9, t1 - t0) * (c.width - 4);
+  const Y = v => c.height - 3 - (v - yMin) / (yMax - yMin) * (c.height - 6);
+  if (zeroLine) {
+    g.strokeStyle = "#2b3442"; g.beginPath();
+    g.moveTo(0, Y(0)); g.lineTo(c.width, Y(0)); g.stroke();
+  }
+  g.strokeStyle = color; g.lineWidth = 1.5; g.beginPath();
+  telem.forEach((p, i) => i ? g.lineTo(X(p.t), Y(p[key])) : g.moveTo(X(p.t), Y(p[key])));
+  g.stroke(); g.lineWidth = 1;
+}
+function drawHist() {
+  const c = document.getElementById("hist"), g = c.getContext("2d");
+  g.clearRect(0, 0, c.width, c.height);
+  const h = S.metrics && S.metrics.wait_hist;
+  if (!h || !h.bins.some(b => b)) return;
+  const n = h.bins.length, max = Math.max(...h.bins);
+  const bw = (c.width - 30) / n;
+  g.font = "10px system-ui";
+  h.bins.forEach((b, i) => {
+    const x = 4 + i * bw, bh = b / max * (c.height - 28);
+    const limit = i * h.bin_s >= 40; // за порогом ISO
+    g.fillStyle = limit ? "#ff5d5d" : "#4ea1ff";
+    g.fillRect(x, c.height - 16 - bh, bw - 3, bh);
+    g.fillStyle = "#7d8da3";
+    if (i % 2 === 0) g.fillText(i < n - 1 ? String(i * h.bin_s) : `${i * h.bin_s}+`, x, c.height - 4);
+    if (b) g.fillText(String(b), x, c.height - 20 - bh);
+  });
+}
+function drawRecent() {
+  const tb = document.querySelector("#recent tbody");
+  if (!S.recent) return;
+  tb.innerHTML = S.recent.map(p => {
+    const route = `${p.from === 0 ? "холл" : p.from} → ${p.to === 0 ? "холл" : p.to}`;
+    const warn = p.wait > 40 ? ' style="color:var(--warn)"' : "";
+    return `<tr><td>№${p.pid} · ${route}</td><td${warn}>${p.wait.toFixed(1)}</td>` +
+           `<td>${p.transit.toFixed(1)}</td><td>${p.ttd.toFixed(1)}</td></tr>`;
+  }).join("");
 }
 function setKpi(id, v, dec, alert) {
   const el = document.getElementById(id);
